@@ -36,10 +36,10 @@ def evolve_spiral(
     vel_delta = 0.03 if emotion.urgency > 0.5 else -0.01
     new_velocity = clamp(core.angular_velocity + vel_delta)
 
-    # Expansion grows when exploring, contracts when stabilising.
+    # Expansion grows when exploring, contracts when stabilising or destroying.
     if intent in {IntentMode.EXPAND, IntentMode.ASCEND}:
         expansion_delta = 0.03
-    elif intent == IntentMode.STABILIZE:
+    elif intent in {IntentMode.STABILIZE, IntentMode.DESTROY}:
         expansion_delta = -0.04
     else:
         expansion_delta = 0.01
@@ -81,7 +81,11 @@ def _evolve_intent(
 ) -> IntentMode:
     """Decide whether to shift the intent mode based on conversation signals."""
 
-    # Under high stress, bias toward stabilisation.
+    # High stress + low confidence → destroy (challenge assumptions, tear down what isn't working).
+    if emotion.stress > 0.6 and confidence < 0.5:
+        return IntentMode.DESTROY
+
+    # Under high stress with reasonable confidence, bias toward stabilisation.
     if emotion.stress > 0.6 and current != IntentMode.STABILIZE:
         return IntentMode.STABILIZE
 
@@ -95,7 +99,7 @@ def _evolve_intent(
 
     # Every 5 turns, consider a natural shift to keep things evolving.
     if turn_count > 0 and turn_count % 5 == 0:
-        cycle = [IntentMode.TRANSFORM, IntentMode.EXPAND, IntentMode.ASCEND, IntentMode.STABILIZE]
+        cycle = [IntentMode.TRANSFORM, IntentMode.EXPAND, IntentMode.ASCEND, IntentMode.DESTROY, IntentMode.STABILIZE]
         idx = cycle.index(current) if current in cycle else 0
         return cycle[(idx + 1) % len(cycle)]
 

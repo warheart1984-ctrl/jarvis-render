@@ -61,3 +61,19 @@ def test_determine_phase_orient_early() -> None:
 def test_determine_phase_reason_low_confidence() -> None:
     phase = determine_phase("Something interesting", 0.3, 5)
     assert phase == SpiralPhase.REASON
+
+
+def test_high_stress_low_confidence_triggers_destroy() -> None:
+    core = SpiralCoreState()
+    emotion = _default_emotion(stress=0.8, inferred_emotion="strained")
+
+    _, new_intent, _ = evolve_spiral(core, IntentMode.TRANSFORM, 0.5, emotion, 0.4, 1)
+    assert new_intent == IntentMode.DESTROY
+
+
+def test_high_stress_high_confidence_stabilises_not_destroys() -> None:
+    core = SpiralCoreState()
+    emotion = _default_emotion(stress=0.8, inferred_emotion="strained")
+
+    _, new_intent, _ = evolve_spiral(core, IntentMode.TRANSFORM, 0.5, emotion, 0.7, 1)
+    assert new_intent == IntentMode.STABILIZE
