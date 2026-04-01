@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -33,11 +34,13 @@ class SpiralClient:
         self._base_url = (base_url or settings.spiral_api_base).rstrip("/")
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
 
     async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
-        return self._client
+        async with self._client_lock:
+            if self._client is None or self._client.is_closed:
+                self._client = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
+            return self._client
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
