@@ -155,7 +155,7 @@ class JarvisEngine:
                 spiral_state=state.spiral_core.model_dump(),
                 emotion=state.emotion.model_dump(),
                 memory_snapshot={
-                    "conversation_turns": len(state.conversation_history) // 2,
+                    "conversation_turns": state.turn_count,
                     "long_term_entries": len(state.long_term_memory),
                     "preferences": state.preferences,
                 },
