@@ -29,7 +29,7 @@ def generate_response(state: JarvisState, user_message: str) -> tuple[str, list[
     reply_parts: list[str] = []
 
     # Greeting / acknowledgement
-    if state.turn_count <= 1:
+    if state.turn_count == 0:
         reply_parts.append(_greeting(emotion))
         trace.append("first-turn greeting added")
 

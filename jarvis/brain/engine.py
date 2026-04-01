@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
-from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -37,15 +37,23 @@ class JarvisEngine:
 
     def __init__(self, spiral_client: SpiralClient | None = None) -> None:
         self._sessions: dict[str, JarvisState] = {}
-        self._lock = Lock()
+        self._global_lock = asyncio.Lock()
+        self._session_locks: dict[str, asyncio.Lock] = {}
         self.spiral = spiral_client or SpiralClient()
 
     # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
 
-    def get_or_create_session(self, user_id: str, session_id: str | None = None) -> JarvisState:
-        with self._lock:
+    async def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the per-session asyncio lock, creating one if needed."""
+        async with self._global_lock:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = asyncio.Lock()
+            return self._session_locks[session_id]
+
+    async def get_or_create_session(self, user_id: str, session_id: str | None = None) -> JarvisState:
+        async with self._global_lock:
             if session_id and session_id in self._sessions:
                 state = self._sessions[session_id]
                 if state.user_id != user_id:
@@ -62,16 +70,15 @@ class JarvisEngine:
                 updated_at=now,
             )
             self._sessions[new_id] = state
+            self._session_locks[new_id] = asyncio.Lock()
             return state
 
     def get_session(self, session_id: str) -> JarvisState | None:
-        with self._lock:
-            return self._sessions.get(session_id)
+        return self._sessions.get(session_id)
 
     def _save_session(self, state: JarvisState) -> None:
-        with self._lock:
-            state.updated_at = datetime.now(timezone.utc).isoformat()
-            self._sessions[state.session_id] = state
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        self._sessions[state.session_id] = state
 
     # ------------------------------------------------------------------
     # Main conversation loop
@@ -89,69 +96,71 @@ class JarvisEngine:
         6. EVOLVE  — mutate the spiral for the next turn
         """
 
-        state = self.get_or_create_session(request.user_id, request.session_id)
+        state = await self.get_or_create_session(request.user_id, request.session_id)
+        session_lock = await self._get_session_lock(state.session_id)
 
-        # --- 1. LISTEN ---
-        biofeedback = request.biofeedback or state.biofeedback
+        async with session_lock:
+            # --- 1. LISTEN ---
+            biofeedback = request.biofeedback or state.biofeedback
 
-        # --- 2. ORIENT ---
-        emotion = infer_emotion(request.message, biofeedback)
-        state.emotion = emotion
-        state.biofeedback = biofeedback
+            # --- 2. ORIENT ---
+            emotion = infer_emotion(request.message, biofeedback)
+            state.emotion = emotion
+            state.biofeedback = biofeedback
 
-        confidence = max(0.25, min(0.95, state.confidence + emotion.confidence_bias))
+            confidence = max(0.25, min(0.95, state.confidence + emotion.confidence_bias))
 
-        phase = determine_phase(request.message, confidence, state.turn_count)
-        state.phase = phase
+            phase = determine_phase(request.message, confidence, state.turn_count)
+            state.phase = phase
 
-        # --- 3. REASON ---
-        new_core, new_intent, new_energy = evolve_spiral(
-            core=state.spiral_core,
-            intent=state.intent,
-            energy=state.energy,
-            emotion=emotion,
-            confidence=confidence,
-            turn_count=state.turn_count,
-        )
-        state.spiral_core = new_core
-        state.intent = new_intent
-        state.energy = new_energy
-        state.confidence = confidence
+            # --- 3. REASON ---
+            new_core, new_intent, new_energy = evolve_spiral(
+                core=state.spiral_core,
+                intent=state.intent,
+                energy=state.energy,
+                emotion=emotion,
+                confidence=confidence,
+                turn_count=state.turn_count,
+            )
+            state.spiral_core = new_core
+            state.intent = new_intent
+            state.energy = new_energy
+            state.confidence = confidence
 
-        # --- 4. RESPOND ---
-        reply, reasoning_trace = generate_response(state, request.message)
+            # --- 4. RESPOND ---
+            reply, reasoning_trace = generate_response(state, request.message)
 
-        # --- 5. REFLECT ---
-        state.conversation_history = add_to_conversation_history(state, request.message, reply)
+            # --- 5. REFLECT ---
+            state.conversation_history = add_to_conversation_history(state, request.message, reply)
 
-        memory_entry = extract_memory(state, request.message, reply)
-        if memory_entry:
-            state.long_term_memory = add_long_term_memory(state, memory_entry)
+            memory_entry = extract_memory(state, request.message, reply)
+            if memory_entry:
+                state.long_term_memory = add_long_term_memory(state, memory_entry)
 
-        state.preferences = update_preferences(state, request.message)
-        state.turn_count += 1
+            state.preferences = update_preferences(state, request.message)
+            state.turn_count += 1
 
-        # --- 6. EVOLVE (sync with Spiral backend if available) ---
-        await self._sync_with_spiral(state, request.message, reply)
+            # --- 6. EVOLVE (sync with Spiral backend if available) ---
+            await self._sync_with_spiral(state, request.message, reply)
 
-        self._save_session(state)
+            self._save_session(state)
 
-        return ChatResponse(
-            session_id=state.session_id,
-            reply=reply,
-            intent=state.intent,
-            phase=state.phase,
-            energy=state.energy,
-            confidence=state.confidence,
-            spiral_state=state.spiral_core.model_dump(),
-            emotion=state.emotion.model_dump(),
-            memory_snapshot={
-                "conversation_turns": len(state.conversation_history) // 2,
-                "long_term_entries": len(state.long_term_memory),
-                "preferences": state.preferences,
-            },
-            reasoning_trace=reasoning_trace,
-        )
+            return ChatResponse(
+                session_id=state.session_id,
+                reply=reply,
+                intent=state.intent,
+                phase=state.phase,
+                energy=state.energy,
+                confidence=state.confidence,
+                spiral_state=state.spiral_core.model_dump(),
+                emotion=state.emotion.model_dump(),
+                memory_snapshot={
+                    "conversation_turns": len(state.conversation_history) // 2,
+                    "long_term_entries": len(state.long_term_memory),
+                    "preferences": state.preferences,
+                },
+                reasoning_trace=reasoning_trace,
+            )
 
     # ------------------------------------------------------------------
     # State retrieval

@@ -30,6 +30,7 @@ class JarvisSettings(BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8100
+    cors_origins: str = "*"
 
     # Behaviour tuning
     max_conversation_history: int = 50
