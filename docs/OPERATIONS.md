@@ -14,8 +14,11 @@ explicit comma-separated `JARVIS_CORS_ORIGINS` allowlist, and a persistent
 ## Recovery
 
 Each turn is stored with a hash-chained audit event and a verified checkpoint.
-On restart, Jarvis restores only a checkpoint whose audit chain and checkpoint
-hash verify. Recovered sessions are read-only until an authenticated conflict
+On restart, Jarvis restores only a checkpoint whose audit chain and audited turn
+anchor verify. Legacy checkpoints do not cryptographically bind their entire saved
+state; cross-session recall requires the additional signed attestation described
+in [the chat/recall contract](CHAT_VOICE.md#read-only-recall-across-sessions).
+Recovered sessions are read-only until an authenticated conflict
 resolution or supersession succeeds.
 
 ## API contracts

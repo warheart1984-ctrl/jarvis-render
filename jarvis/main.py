@@ -156,7 +156,10 @@ async def capabilities() -> dict[str, object]:
         "speech_provider": "nvidia",
         "voice_transport": "turn_based",
         "full_duplex": False,
-        "build": "jarvis-chat-voice-v4",
+        "recall_configured": bool(settings.service_token and settings.recall_owner_user_id),
+        "recall_owner_user_id": settings.recall_owner_user_id if settings.service_token else "",
+        "recall_auth_mode": "single_operator_service_token",
+        "build": "jarvis-chat-voice-v5",
     }
 
 
@@ -182,6 +185,6 @@ async def readiness() -> JSONResponse:
             "safe_mode_available": True,
             "degraded": not configured,
             "provider_connectivity": "checked_on_request",
-            "build": "jarvis-chat-voice-v4",
+            "build": "jarvis-chat-voice-v5",
         },
     )

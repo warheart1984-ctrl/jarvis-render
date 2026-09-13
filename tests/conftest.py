@@ -19,3 +19,4 @@ def isolate_provider(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "mock")
     monkeypatch.setattr(settings, "llm_api_key", "")
     monkeypatch.setattr(settings, "nvidia_api_key", "")
+    monkeypatch.setattr(settings, "recall_owner_user_id", "")

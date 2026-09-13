@@ -36,6 +36,7 @@ class ChatRequest(BaseModel):
     biofeedback: BiofeedbackState | None = None
     input_mode: Literal["text", "voice"] = "text"
     memory_consent: bool = False
+    recall_previous: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -68,6 +69,7 @@ class ChatResponse(BaseModel):
     inference_status: str = "not_requested"
     transaction_id: str = ""
     correlation_id: str = ""
+    previous_session: dict[str, Any] = Field(default_factory=lambda: {"status": "disabled"})
 
 
 class SpiralTurn(BaseModel):

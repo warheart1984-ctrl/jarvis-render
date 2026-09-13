@@ -51,6 +51,9 @@
           <dt>Usage cost</dt><dd id="cost">Not reported</dd><dt>Session</dt><dd id="session-label">New conversation</dd></dl>
       </section>
       <section class="card panel"><h2>Memory & recovery</h2>
+        <label class="consent"><input id="recall" type="checkbox" checked disabled> Recall previous conversation (read-only)</label>
+        <p class="hint">When enabled, a bounded excerpt of your latest eligible verified conversation is sent to the chat provider. The source stays unchanged. This service uses a single operator token, not separate user logins.</p>
+        <p id="recall-state" role="status">Connect to check recall availability.</p>
         <label class="consent"><input id="consent" type="checkbox"> Allow memory extraction when policy permits</label>
         <p class="hint">Conversation history is saved on the server. Extracted memories and external writes are blocked on read-only turns.</p>
         <p id="memory-state">No session loaded.</p><p id="audit-state">Audit not checked.</p>

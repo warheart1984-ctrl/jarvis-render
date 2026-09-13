@@ -90,6 +90,8 @@ class JarvisSettings(BaseSettings):
     continuity_ledger_url: str = ""
     continuity_ledger_token: str = ""
     service_token: str = ""
+    # Single-operator recall; never derive this principal from the request's user_id.
+    recall_owner_user_id: str = ""
     environment: str = "development"
 
     def validate_deployment(self) -> None:

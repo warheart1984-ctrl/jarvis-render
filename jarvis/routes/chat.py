@@ -170,10 +170,17 @@ async def supersede_memory(
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest, x_jarvis_service_token: str = Header(default="")) -> ChatResponse:
     """Send a message to Jarvis and receive a spiral-aware response."""
+    recall_owner = None
+    if settings.recall_owner_user_id:
+        if not settings.service_token or not secrets.compare_digest(x_jarvis_service_token, settings.service_token):
+            raise HTTPException(status_code=401, detail="Operator recall requires a valid service token")
+        if request.user_id != settings.recall_owner_user_id:
+            raise HTTPException(status_code=403, detail="User ID does not match the server-bound operator")
+        recall_owner = settings.recall_owner_user_id
     try:
-        return await engine.chat(request)
+        return await engine.chat(request, recall_owner=recall_owner)
     except ProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except ValueError as exc:

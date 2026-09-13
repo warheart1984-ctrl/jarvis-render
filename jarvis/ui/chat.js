@@ -1,4 +1,5 @@
 import { createRecorder, disposePlayback } from "./audio.js";
+import { recallStatus } from "./recall.js";
 
 const $ = id => document.getElementById(id);
 let session = "", connected = false, busy = false, recovered = false;
@@ -28,6 +29,7 @@ function controls() {
   $("mode").disabled = locked;
   $("refresh").disabled = !connected || busy || !session;
   $("consent").disabled = locked || recovered;
+  $("recall").disabled = locked || recovered || !connected || !caps.recall_configured;
   $("user-id").disabled = connected;
 }
 async function request(path, options = {}, audio = false) {
@@ -117,6 +119,7 @@ function decision(d) {
   $("provider").textContent = d.provider + " / " + d.model;
   $("latency").textContent = Math.round(d.latency_ms) + " ms";
   $("cost").textContent = d.cost_reported ? "$" + Number(d.cost_usd).toFixed(6) : "Not reported by provider";
+  $("recall-state").textContent = recallStatus(d.previous_session);
 }
 function setSession(id) { session = id; $("session-label").textContent = id || "New conversation"; storage.save(); }
 async function governance() {
@@ -128,6 +131,11 @@ async function governance() {
   ]);
   $("state").textContent = JSON.stringify(s, null, 2); $("trace").textContent = JSON.stringify(t, null, 2);
   $("audit").textContent = JSON.stringify(a, null, 2);
+  const lastTurn = [...a.events].reverse().find(e => e.event_type === "spiral_turn");
+  if (lastTurn) {
+    try { $("recall-state").textContent = recallStatus(JSON.parse(lastTurn.payload_json).runtime_context?.previous_session); }
+    catch { $("recall-state").textContent = "Recall metadata could not be read."; }
+  }
   $("memory-state").textContent = s.memory_count + " extracted memories. External storage is not confirmed by this count.";
   $("audit-state").textContent = v.valid ? "Audit chain verified." : "Audit verification failed.";
   recovered = s.read_only || !v.valid;
@@ -141,6 +149,10 @@ $("connect-form").onsubmit = async e => {
   busy = true; controls(); error(); activity("Connecting…");
   try {
     caps = await request("/capabilities");
+    if (caps.recall_configured) $("user-id").value = caps.recall_owner_user_id;
+    $("recall-state").textContent = caps.recall_configured
+      ? "Operator-scoped recall ready. Only verified prior history will be used."
+      : "Cross-session recall is not configured on this server.";
     connected = true;
     $("connection").textContent = caps.chat_configured ? caps.provider + " chat configured" : "Local responder · NVIDIA not configured";
     $("provider").textContent = caps.provider + " / " + caps.model;
@@ -164,6 +176,7 @@ $("new-chat").onclick = () => {
   $("decision").textContent = "No response yet."; $("confidence").textContent = "—"; $("uncertainty").textContent = "—";
   $("latency").textContent = "—"; $("cost").textContent = "No response yet.";
   $("memory-state").textContent = "No session loaded."; $("audit-state").textContent = "Audit not checked.";
+  $("recall-state").textContent = "Recall will be checked when you send a message.";
   controls(); activity(connected ? "Ready." : "Connect to start."); $("message").focus();
 };
 async function send(inputMode = "text") {
@@ -172,7 +185,8 @@ async function send(inputMode = "text") {
   busy = true; controls(); error(); stopAudio(); activity("Jarvis is thinking…");
   try {
     const d = await post("/chat", { user_id: $("user-id").value.trim(), session_id: session || null,
-      message: text, input_mode: inputMode, memory_consent: $("consent").checked });
+      message: text, input_mode: inputMode, memory_consent: $("consent").checked,
+      recall_previous: !!caps.recall_configured && $("recall").checked });
     setSession(d.session_id); message("user", text); message("jarvis", d.reply, d); decision(d); $("message").value = "";
     try { await governance(); } catch (e) { error("Reply received, but governance refresh failed: " + e.message); }
     activity("Reply received.");

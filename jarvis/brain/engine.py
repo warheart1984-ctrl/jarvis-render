@@ -29,6 +29,7 @@ from jarvis.models.jarvis_types import (
     SpiralTurn,
 )
 from jarvis.persistence import AuditLedger, JarvisStore
+from jarvis.persistence.recall import RecallLedger, RecallResult
 from jarvis.persistence.reviver import ReviverLedger
 from jarvis.spiral_client import SpiralClient
 from jarvis.spiral_client.infinity import ProjectInfinityClient
@@ -51,6 +52,7 @@ class JarvisEngine:
         self.store = store or JarvisStore(settings.memory_db_path)
         self.audit = AuditLedger(self.store.path)
         self.reviver = ReviverLedger(self.store.path)
+        self.recall = RecallLedger(self.store.path)
         self._read_only_sessions: set[str] = set()
         self.continuity = (
             ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token)
@@ -118,7 +120,7 @@ class JarvisEngine:
     # Main conversation loop
     # ------------------------------------------------------------------
 
-    async def chat(self, request: ChatRequest) -> ChatResponse:
+    async def chat(self, request: ChatRequest, *, recall_owner: str | None = None) -> ChatResponse:
         """Process a user message through the full Jarvis spiral loop.
 
         Steps:
@@ -130,6 +132,14 @@ class JarvisEngine:
         6. EVOLVE  — mutate the spiral for the next turn
         """
 
+        # This optional principal comes from token verification in the server route,
+        # never from request.context or another client-supplied field.
+        if recall_owner is not None and (
+            not settings.service_token
+            or recall_owner != settings.recall_owner_user_id
+            or recall_owner != request.user_id
+        ):
+            raise ValueError("Recall ownership check failed")
         state = await self.get_or_create_session(request.user_id, request.session_id)
         if state.session_id in self._read_only_sessions:
             raise ValueError("Session is read-only pending conflict resolution.")
@@ -181,6 +191,15 @@ class JarvisEngine:
                 self.audit.append(uuid4().hex, state.session_id, "inference_attempt", entry, turn_id=turn_id)
 
             llm_result = None
+            previous = RecallResult()
+            if request.recall_previous:
+                previous = (
+                    self.recall.previous(
+                        recall_owner, settings.service_token, session_id=state.session_id, before=state.created_at
+                    )
+                    if recall_owner
+                    else RecallResult({"status": "not_authorized"})
+                )
             messages, runtime_context = build_chat_context(
                 state,
                 request,
@@ -188,7 +207,20 @@ class JarvisEngine:
                 infinity_configured=self.infinity is not None,
                 continuity_configured=self.continuity is not None,
                 speech_configured=bool(settings.nvidia_api_key),
+                previous=previous,
             )
+            if request.recall_previous:
+                self.audit.append(
+                    uuid4().hex,
+                    state.session_id,
+                    "previous_session_recall",
+                    {
+                        **runtime_context["previous_session"],
+                        "transaction_id": turn_id,
+                        "correlation_id": correlation_id,
+                    },
+                    turn_id=turn_id,
+                )
             # Language-only clarification is allowed even when consequential actions
             # are blocked. No tools, external memory writes or execution are offered.
             if emotion.stress <= 0.8:
@@ -304,6 +336,19 @@ class JarvisEngine:
                 state=state.model_dump(mode="json"),
                 verified=True,
             )
+            if recall_owner:
+                try:
+                    self.recall.attest(
+                        state.session_id,
+                        recall_owner,
+                        settings.service_token,
+                        expected_state=state.model_dump(mode="json"),
+                    )
+                except Exception:
+                    # The turn is stored, but no signed recall checkpoint was confirmed.
+                    # Lock rather than continue with live state behind durable state.
+                    self.set_read_only(state.session_id)
+                    raise RuntimeError("Recall checkpoint could not be confirmed; session locked") from None
 
             self._save_session(state)
 
@@ -339,6 +384,7 @@ class JarvisEngine:
                 inference_status=llm_result.inference_status if llm_result else "not_requested",
                 transaction_id=turn_id,
                 correlation_id=correlation_id,
+                previous_session=runtime_context["previous_session"],
             )
 
     # ------------------------------------------------------------------
@@ -401,6 +447,7 @@ class JarvisEngine:
         if state is None:
             raise ValueError("Session not found.")
 
+        self.recall.revoke(session_id)
         state.conversation_history = []
         state.long_term_memory = []
         state.preferences = {}
