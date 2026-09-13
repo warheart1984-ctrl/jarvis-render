@@ -1,0 +1,396 @@
+"""Jarvis engine — orchestrates conversation, spiral evolution, memory, and response generation."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+from jarvis.brain.emotion import infer_emotion
+from jarvis.brain.llm import generate_llm_reply
+from jarvis.brain.memory import (
+    add_long_term_memory,
+    add_to_conversation_history,
+    extract_memory,
+    update_preferences,
+)
+from jarvis.brain.responder import generate_response
+from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
+from jarvis.continuity import ContinuityLedgerClient
+from jarvis.core.config import settings
+from jarvis.models.jarvis_types import (
+    ChatRequest,
+    ChatResponse,
+    JarvisState,
+    SpiralTurn,
+)
+from jarvis.persistence import AuditLedger, JarvisStore
+from jarvis.persistence.reviver import ReviverLedger
+from jarvis.spiral_client import SpiralClient
+from jarvis.spiral_client.infinity import ProjectInfinityClient
+
+logger = logging.getLogger(__name__)
+
+
+class JarvisEngine:
+    """The main Jarvis orchestrator.
+
+    Manages sessions, processes user messages through the spiral reasoning loop,
+    and optionally syncs state with the Spiral Intelligence backend.
+    """
+
+    def __init__(self, spiral_client: SpiralClient | None = None, store: JarvisStore | None = None) -> None:
+        self._sessions: dict[str, JarvisState] = {}
+        self._global_lock = asyncio.Lock()
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self.spiral = spiral_client or SpiralClient()
+        self.store = store or JarvisStore(settings.memory_db_path)
+        self.audit = AuditLedger(self.store.path)
+        self.reviver = ReviverLedger(self.store.path)
+        self._read_only_sessions: set[str] = set()
+        self.continuity = (
+            ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token)
+            if settings.continuity_ledger_url
+            else None
+        )
+        self.infinity = (
+            ProjectInfinityClient(settings.infinity_api_base, settings.service_token)
+            if settings.infinity_enabled and settings.infinity_api_base
+            else None
+        )
+
+    # ------------------------------------------------------------------
+    # Session management
+    # ------------------------------------------------------------------
+
+    async def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the per-session asyncio lock, creating one if needed."""
+        async with self._global_lock:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = asyncio.Lock()
+            return self._session_locks[session_id]
+
+    async def get_or_create_session(self, user_id: str, session_id: str | None = None) -> JarvisState:
+        async with self._global_lock:
+            if session_id and session_id in self._sessions:
+                state = self._sessions[session_id]
+                if state.user_id != user_id:
+                    raise ValueError("Session does not belong to this user.")
+                return state
+
+            new_id = session_id or f"{settings.jarvis_default_session_prefix}-{uuid4().hex[:8]}"
+            now = datetime.now(timezone.utc).isoformat()
+            state = JarvisState(
+                session_id=new_id,
+                user_id=user_id,
+                energy=settings.default_energy,
+                created_at=now,
+                updated_at=now,
+            )
+            if session_id:
+                recovered = self.reviver.recover(new_id, self.audit)
+                if recovered:
+                    try:
+                        state = JarvisState.model_validate(recovered["state"])
+                    except Exception:
+                        pass
+                    self._read_only_sessions.add(new_id)
+            self._sessions[new_id] = state
+            self._session_locks[new_id] = asyncio.Lock()
+            return state
+
+    def get_session(self, session_id: str) -> JarvisState | None:
+        return self._sessions.get(session_id)
+
+    def _save_session(self, state: JarvisState) -> None:
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        self._sessions[state.session_id] = state
+
+    # ------------------------------------------------------------------
+    # Main conversation loop
+    # ------------------------------------------------------------------
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        """Process a user message through the full Jarvis spiral loop.
+
+        Steps:
+        1. LISTEN  — receive the message and resolve the session
+        2. ORIENT  — infer emotion, determine phase, detect intent signals
+        3. REASON  — evolve spiral state based on emotional and contextual signals
+        4. RESPOND — generate a contextual reply
+        5. REFLECT — extract memories and update preferences
+        6. EVOLVE  — mutate the spiral for the next turn
+        """
+
+        state = await self.get_or_create_session(request.user_id, request.session_id)
+        if state.session_id in self._read_only_sessions:
+            raise ValueError("Session is read-only pending conflict resolution.")
+        session_lock = await self._get_session_lock(state.session_id)
+
+        async with session_lock:
+            # --- 1. LISTEN ---
+            biofeedback = request.biofeedback or state.biofeedback
+
+            # --- 2. ORIENT ---
+            emotion = infer_emotion(request.message, biofeedback)
+            state.emotion = emotion
+            state.biofeedback = biofeedback
+
+            confidence = max(0.25, min(0.95, state.confidence + emotion.confidence_bias))
+
+            phase = determine_phase(request.message, confidence, state.turn_count)
+            state.phase = phase
+
+            # --- 3. REASON ---
+            new_core, new_intent, new_energy = evolve_spiral(
+                core=state.spiral_core,
+                intent=state.intent,
+                energy=state.energy,
+                emotion=emotion,
+                confidence=confidence,
+                turn_count=state.turn_count,
+            )
+            state.spiral_core = new_core
+            state.intent = new_intent
+            state.energy = new_energy
+            state.confidence = confidence
+            uncertainty = round(1.0 - confidence, 4)
+            reasons = []
+            if uncertainty >= 0.5:
+                reasons.append("uncertainty at or above safe execution threshold")
+            if emotion.stress > 0.8:
+                reasons.append("stress above safe execution threshold")
+            decision = "fail_closed" if reasons else "answer"
+
+            # --- 4. RESPOND ---
+            local_reply, reasoning_trace = generate_response(state, request.message)
+            llm_result = None
+            if decision != "fail_closed":
+                try:
+                    llm_result = await generate_llm_reply(
+                        [
+                            {"role": "system", "content": "You are Jarvis, a concise and careful assistant."},
+                            *state.conversation_history[-10:],
+                            {"role": "user", "content": request.message},
+                        ]
+                    )
+                except Exception as exc:
+                    logger.warning("LLM provider unavailable; using governed local response: %s", exc)
+                    reasoning_trace.append("provider unavailable; local fallback applied")
+            reply = llm_result.reply if llm_result else local_reply
+            if decision == "fail_closed":
+                reply = (
+                    "I’m pausing consequential action because the available signals are uncertain. "
+                    "I can clarify the goal or continue with read-only planning."
+                )
+                reasoning_trace.append("fail-closed safety lane applied")
+
+            # --- 5. REFLECT ---
+            state.conversation_history = add_to_conversation_history(state, request.message, reply)
+
+            memory_entry = extract_memory(state, request.message, reply)
+            if memory_entry:
+                state.long_term_memory = add_long_term_memory(state, memory_entry)
+
+            state.preferences = update_preferences(state, request.message)
+            state.turn_count += 1
+            turn_id = uuid4().hex
+            turn = SpiralTurn(
+                turn_id=turn_id,
+                session_id=state.session_id,
+                timestamp=datetime.now(timezone.utc),
+                decision=decision,
+                uncertainty=uncertainty,
+                stress=emotion.stress,
+                fail_closed_reason="; ".join(reasons) if reasons else None,
+                evidence=[{"type": "emotion", "rationale": emotion.rationale}],
+                content=reply,
+                content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
+            )
+            # --- 6. EVOLVE (sync with Spiral backend if available) ---
+            sync_started = time.perf_counter()
+            backend_status = await self._sync_with_spiral(state, request.message, reply)
+            turn.latency_ms = round((llm_result.latency_ms if llm_result else 0.0) + (time.perf_counter() - sync_started) * 1000, 3)
+            turn.provider = llm_result.provider if llm_result else "local"
+            turn.model = llm_result.model if llm_result else "bounded-local"
+            turn.cost_usd = llm_result.cost_usd if llm_result else 0.0
+            turn.backend_status = backend_status
+            self.store.save_turn_bundle(
+                turn,
+                {
+                    "event_id": turn_id,
+                    "event_type": "spiral_turn",
+                    "timestamp": turn.timestamp.isoformat(),
+                    "payload": {
+                        "decision": decision,
+                        "uncertainty": uncertainty,
+                        "stress": emotion.stress,
+                        "reason": turn.fail_closed_reason,
+                        "content_sha256": turn.content_sha256,
+                    },
+                },
+                {
+                    "id": memory_entry.memory_id,
+                    "session_id": state.session_id,
+                    "content": memory_entry.content,
+                    "created_at": memory_entry.created_at,
+                    "confidence": memory_entry.importance,
+                    "type": memory_entry.category,
+                    "subject": state.user_id,
+                    "evidence": [{"source": "chat"}],
+                }
+                if memory_entry
+                else None,
+            )
+
+            audit_event = self.audit.list(state.session_id)[-1]
+            self.reviver.save(
+                checkpoint_id=f"checkpoint-{turn_id}",
+                session_id=state.session_id,
+                turn_id=turn_id,
+                audit_hash=audit_event["event_hash"],
+                state=state.model_dump(mode="json"),
+                verified=True,
+            )
+
+            self._save_session(state)
+
+            return ChatResponse(
+                session_id=state.session_id,
+                reply=reply,
+                intent=state.intent,
+                phase=state.phase,
+                energy=state.energy,
+                confidence=state.confidence,
+                spiral_state=state.spiral_core.model_dump(),
+                emotion=state.emotion.model_dump(),
+                memory_snapshot={
+                    "conversation_turns": state.turn_count,
+                    "long_term_entries": len(state.long_term_memory),
+                    "preferences": state.preferences,
+                },
+                reasoning_trace=reasoning_trace,
+                turn_id=turn_id,
+                decision=decision,
+                uncertainty=uncertainty,
+                fail_closed_reason=turn.fail_closed_reason,
+                provider=turn.provider,
+                model=turn.model,
+                cost_usd=turn.cost_usd,
+                latency_ms=turn.latency_ms,
+            )
+
+    # ------------------------------------------------------------------
+    # State retrieval
+    # ------------------------------------------------------------------
+
+    def get_state_summary(self, session_id: str) -> dict[str, Any]:
+        state = self.get_session(session_id)
+        if state is None:
+            raise ValueError("Session not found.")
+
+        return {
+            "session_id": state.session_id,
+            "user_id": state.user_id,
+            "phase": state.phase.value,
+            "intent": state.intent.value,
+            "energy": state.energy,
+            "confidence": state.confidence,
+            "turn_count": state.turn_count,
+            "spiral_core": state.spiral_core.model_dump(),
+            "emotion": state.emotion.model_dump(),
+            "preferences": state.preferences,
+            "created_at": state.created_at,
+            "updated_at": state.updated_at,
+        }
+
+    def get_memory_summary(self, session_id: str) -> dict[str, Any]:
+        state = self.get_session(session_id)
+        if state is None:
+            raise ValueError("Session not found.")
+
+        return {
+            "session_id": state.session_id,
+            "conversation_history": state.conversation_history,
+            "long_term_memory": [m.model_dump() for m in state.long_term_memory],
+            "preferences": state.preferences,
+        }
+
+    def get_trace(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent structured, user-safe decision traces."""
+        return self.store.load_session_turns(session_id, limit)
+
+    def get_audit(self, session_id: str) -> list[dict[str, Any]]:
+        return self.audit.list(session_id)
+
+    def verify_audit(self, session_id: str) -> dict[str, Any]:
+        return {"session_id": session_id, "valid": self.audit.verify(session_id)}
+
+    def set_read_only(self, session_id: str) -> None:
+        self._read_only_sessions.add(session_id)
+
+    def is_read_only(self, session_id: str) -> bool:
+        return session_id in self._read_only_sessions
+
+    def clear_memory(self, session_id: str) -> dict[str, str]:
+        state = self.get_session(session_id)
+        if state is None:
+            raise ValueError("Session not found.")
+
+        state.conversation_history = []
+        state.long_term_memory = []
+        state.preferences = {}
+        self._save_session(state)
+
+        return {"status": "cleared", "session_id": session_id}
+
+    # ------------------------------------------------------------------
+    # Spiral backend sync
+    # ------------------------------------------------------------------
+
+    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
+        """Optionally push state to the Spiral Intelligence backend."""
+
+        try:
+            if self.infinity:
+                await self.infinity.evolve(
+                    job_id=f"jarvis-{state.session_id}-{state.turn_count}",
+                    jarvis_run_id=state.session_id,
+                    task=user_message,
+                    initial_candidate=reply,
+                )
+            if not await self.spiral.is_available():
+                return "unavailable"
+
+            await self.spiral.spiral_turn(
+                session_id=state.session_id,
+                prompt=user_message,
+                energy=state.energy,
+                intent=state.intent,
+            )
+
+            # Push a chat turn to the V1 backend.
+            await self.spiral.spiral_chat(
+                user_id=state.user_id,
+                message=user_message,
+                session_id=state.session_id,
+            )
+
+            # Write a memory entry to the V7 backend.
+            await self.spiral.write_memory(
+                user_id=state.user_id,
+                session_id=state.session_id,
+                label=f"jarvis:{state.intent.value}:{state.turn_count}",
+                energy=state.energy,
+                intent=state.intent,
+                score=state.confidence,
+                notes=f"Jarvis turn {state.turn_count}: {user_message[:100]}",
+            )
+            return "connected"
+        except Exception as exc:
+            logger.debug("Spiral sync skipped: %s", exc)
+            return "error"
