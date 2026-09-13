@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from jarvis.brain.emotion import infer_emotion
+from jarvis.brain.llm import generate_llm_reply
 from jarvis.brain.memory import (
     add_long_term_memory,
     add_to_conversation_history,
@@ -166,7 +167,21 @@ class JarvisEngine:
             decision = "fail_closed" if reasons else "answer"
 
             # --- 4. RESPOND ---
-            reply, reasoning_trace = generate_response(state, request.message)
+            local_reply, reasoning_trace = generate_response(state, request.message)
+            llm_result = None
+            if decision != "fail_closed":
+                try:
+                    llm_result = await generate_llm_reply(
+                        [
+                            {"role": "system", "content": "You are Jarvis, a concise and careful assistant."},
+                            *state.conversation_history[-10:],
+                            {"role": "user", "content": request.message},
+                        ]
+                    )
+                except Exception as exc:
+                    logger.warning("LLM provider unavailable; using governed local response: %s", exc)
+                    reasoning_trace.append("provider unavailable; local fallback applied")
+            reply = llm_result.reply if llm_result else local_reply
             if decision == "fail_closed":
                 reply = (
                     "I’m pausing consequential action because the available signals are uncertain. "
@@ -199,9 +214,10 @@ class JarvisEngine:
             # --- 6. EVOLVE (sync with Spiral backend if available) ---
             sync_started = time.perf_counter()
             backend_status = await self._sync_with_spiral(state, request.message, reply)
-            turn.latency_ms = round((time.perf_counter() - sync_started) * 1000, 3)
-            turn.provider = settings.llm_provider
-            turn.model = settings.llm_model
+            turn.latency_ms = round((llm_result.latency_ms if llm_result else 0.0) + (time.perf_counter() - sync_started) * 1000, 3)
+            turn.provider = llm_result.provider if llm_result else "local"
+            turn.model = llm_result.model if llm_result else "bounded-local"
+            turn.cost_usd = llm_result.cost_usd if llm_result else 0.0
             turn.backend_status = backend_status
             self.store.save_turn_bundle(
                 turn,
@@ -262,6 +278,10 @@ class JarvisEngine:
                 decision=decision,
                 uncertainty=uncertainty,
                 fail_closed_reason=turn.fail_closed_reason,
+                provider=turn.provider,
+                model=turn.model,
+                cost_usd=turn.cost_usd,
+                latency_ms=turn.latency_ms,
             )
 
     # ------------------------------------------------------------------

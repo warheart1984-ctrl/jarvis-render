@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -23,11 +24,14 @@ class JarvisSettings(BaseSettings):
     jarvis_user_id: str = "jarvis"
     jarvis_default_session_prefix: str = "jarvis-session"
 
-    # LLM provider (for future integration)
+    # OpenAI-compatible LLM provider (NVIDIA hosted API, OpenRouter, etc.)
     llm_provider: str = "mock"
     llm_api_key: str = ""
-    llm_model: str = "gpt-4"
+    nvidia_api_key: str = Field(default="", validation_alias="NVIDIA_API_KEY")
+    llm_base_url: str = "https://integrate.api.nvidia.com/v1"
+    llm_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
     llm_temperature: float = 0.7
+    llm_timeout_seconds: float = 45.0
 
     # Server
     host: str = "0.0.0.0"

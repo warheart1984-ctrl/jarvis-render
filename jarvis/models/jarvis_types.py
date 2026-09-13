@@ -53,6 +53,10 @@ class ChatResponse(BaseModel):
     decision: str = "answer"
     uncertainty: float = 0.5
     fail_closed_reason: str | None = None
+    provider: str = "local"
+    model: str = "bounded-local"
+    cost_usd: float = 0.0
+    latency_ms: float = 0.0
 
 
 class SpiralTurn(BaseModel):
