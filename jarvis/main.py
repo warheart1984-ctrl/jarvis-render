@@ -51,7 +51,9 @@ _RATE_LIMIT = 60
 @app.middleware("http")
 async def service_boundary(request: Request, call_next):
     """Protect state-changing and diagnostic routes when deployed with a token."""
-    protected = request.url.path in {"/chat", "/capabilities"} or request.url.path.startswith(
+    # Match the router's actual path, never a URL reconstructed from the Host header.
+    path = request.scope["path"]
+    protected = path in {"/chat", "/capabilities"} or path.startswith(
         ("/sessions/", "/memory/", "/state/", "/voice/")
     )
     request_id = request.headers.get("X-Request-ID") or uuid4().hex
@@ -83,7 +85,7 @@ async def service_boundary(request: Request, call_next):
         supplied = request.headers.get("X-Jarvis-Service-Token", "")
         if not expected or not secrets.compare_digest(supplied, expected):
             _security_audit.append(
-                uuid4().hex, "security", "auth_failure", {"path": request.url.path, "request_id": request_id}
+                uuid4().hex, "security", "auth_failure", {"path": path, "request_id": request_id}
             )
             return JSONResponse(
                 status_code=401,
@@ -103,7 +105,7 @@ async def service_boundary(request: Request, call_next):
     response.headers["Referrer-Policy"] = "same-origin"
     if protected:
         response.headers["Cache-Control"] = "no-store"
-    if request.url.path.startswith("/ui"):
+    if path.startswith("/ui"):
         response.headers["Cache-Control"] = "no-cache"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "

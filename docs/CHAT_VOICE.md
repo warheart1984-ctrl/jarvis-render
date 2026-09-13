@@ -79,6 +79,12 @@ This creates a synthetic test session and tests auth, two text turns,
 speech generation/transcription, voice chat, audio output and audit verification.
 It reads existing environment credentials without printing them.
 
+The release regression suite passes 93 tests against the locked dependencies.
+The dependency audit of every pinned package found no known vulnerabilities
+on 2026-09-13. This is not a claim of a complete application security audit.
+Authentication checks use the ASGI request path, not a URL reconstructed from
+the Host header; malformed-host bypass cases have dedicated regression tests.
+
 Provider contracts:
 - https://docs.api.nvidia.com/nim/reference/llm-apis
 - https://build.nvidia.com/nvidia/parakeet-ctc-1_1b-asr/api

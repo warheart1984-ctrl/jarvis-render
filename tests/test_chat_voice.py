@@ -219,3 +219,10 @@ def test_api_provider_failure_and_resume(client, monkeypatch):
         ).status_code
         == 400
     )
+
+
+@pytest.mark.parametrize("host", ["testserver/health?ignored=", "testserver#", "testserver?"])
+def test_host_header_cannot_bypass_authentication(client, host):
+    client, engine = client
+    assert client.post("/chat", headers={"Host": host}, json={"user_id": "u", "message": "hi"}).status_code == 401
+    assert client.get("/capabilities", headers={"Host": host}).status_code == 401
