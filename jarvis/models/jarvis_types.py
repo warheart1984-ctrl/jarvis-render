@@ -62,6 +62,12 @@ class ChatResponse(BaseModel):
     cost_reported: bool = False
     read_only: bool = False
     input_mode: Literal["text", "voice"] = "text"
+    provider_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_used: bool = False
+    safe_mode: bool = False
+    inference_status: str = "not_requested"
+    transaction_id: str = ""
+    correlation_id: str = ""
 
 
 class SpiralTurn(BaseModel):

@@ -12,6 +12,10 @@ services:
         value: nvidia
       - key: JARVIS_LLM_MODEL
         value: nvidia/nemotron-3.5-lightning-30b-a3b
+      - key: JARVIS_LLM_FALLBACK_MODELS
+        value: openai/gpt-oss-20b,z-ai/glm-5.3-flash
+      - key: JARVIS_LLM_ATTEMPT_TIMEOUT_SECONDS
+        value: "15"
       - key: NVIDIA_API_KEY
         sync: false
       - key: JARVIS_MEMORY_DB_PATH

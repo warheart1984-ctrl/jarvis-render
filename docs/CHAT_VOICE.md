@@ -21,6 +21,8 @@ are held in memory and are not saved to disk.
 - JARVIS_LLM_BASE_URL=https://integrate.api.nvidia.com/v1
 - JARVIS_LLM_MAX_TOKENS=768
 - JARVIS_LLM_TIMEOUT_SECONDS=45
+- JARVIS_LLM_ATTEMPT_TIMEOUT_SECONDS=15
+- JARVIS_LLM_FALLBACK_MODELS=openai/gpt-oss-20b,z-ai/glm-5.3-flash
 - JARVIS_SPEECH_VOICE=Magpie-Multilingual.EN-US.Aria
 - JARVIS_SERVICE_TOKEN: the operator token protecting chat, speech, sessions and diagnostics.
 - JARVIS_CORS_ORIGINS=https://jarvis-avfy.onrender.com
@@ -53,9 +55,53 @@ All endpoints below require X-Jarvis-Service-Token.
   Recovered sessions remain read-only. New chat creates a fresh session.
 - GET /sessions/{session_id}/audit/verify: audit verification.
 
-Provider failures return 503, with no fabricated successful fallback. Errors
-are sanitized; the browser preserves the unsent message and never retries a
-chat automatically. Speech failures leave the text response available.
+Inference slots expose accepted, refused, unavailable or unknown outcomes.
+The deployed defaults use three NVIDIA-hosted models. Each attempt takes at most
+15 seconds, with a 45-second total budget and a 60-second model cooldown.
+Bad credentials (401/403) disable attempts using that same credential reference;
+an independently configured provider may still answer. A content/safety refusal
+is terminal: no alternate model is tried to evade it.
+
+If all inference slots fail, /chat returns a persisted minimal status reply
+(HTTP 200 delivery, NOT confirmed inference): safe_mode=true, read_only=true,
+decision=fail_closed, inference_status=unavailable/unknown/refused, provider=internal,
+model=minimal-chat. This is a deterministic status responder, not an offline LLM.
+It does not invent answers, extract memories, sync externally, or enable voice.
+Storage, authentication or internal programming failures can still return errors.
+Availability is conditional on Jarvis and its storage remaining operational.
+
+Every attempted inference is journaled as unknown/started before the network call
+and its outcome is journaled afterward. Cooldown skips are logged as not attempted.
+Responses, traces and audit events include provider_attempts, transaction_id,
+correlation_id, the actual model, fallback_used, safe_mode and inference_status.
+Interrupted attempts remain explicitly unknown in the audit. Attempts can consume
+provider quota; an unreported total cost is not labeled free.
+
+Speech synthesis never holds the text composer locked. Microphone, transcription
+or playback failures switch the console to text mode; existing typed text and
+received replies remain available. Safe-mode chat remains usable for basic status
+and acknowledges the outage. A failed HTTP request preserves the unsent message;
+the browser never silently replays a submitted chat.
+
+## Provider-independent slots
+
+Set JARVIS_LLM_SLOTS to a JSON array to override the legacy provider/model settings.
+Up to three OpenAI-compatible chat-completion endpoints are supported, including
+llama.cpp on a loopback endpoint. Each slot supports provider, model, base_url,
+api_key_env (a server environment-variable NAME), attempts (1–2), timeout_seconds
+(1–30) and cooldown_seconds (1–3600). The global time budget still applies.
+For example, this single slot uses the existing NVIDIA key without embedding it:
+
+```json
+[{"provider":"nvidia","model":"openai/gpt-oss-20b","base_url":"https://integrate.api.nvidia.com/v1","api_key_env":"NVIDIA_API_KEY","attempts":1,"timeout_seconds":15,"cooldown_seconds":60}]
+```
+
+All configured slots are trusted server configuration, never request parameters.
+HTTPS is required except HTTP to localhost/127.0.0.1/::1. Credentials in URLs are
+rejected. Keys are resolved separately per slot and never copied to another provider.
+A local slot may omit api_key_env; it then receives no cloud Authorization header.
+Non-OpenAI-compatible protocols need an additional adapter; they are not guessed.
+No external provider or local LLM is provisioned by this configuration mechanism.
 
 The uncertainty >= 0.5 or stress > 0.8 action gate remains in force.
 Low-confidence sessions may use the LLM for read-only discussion/clarification,
@@ -66,7 +112,8 @@ The service token is an operator credential, not multi-user account authenticati
 
 GET /health is liveness. GET /health/ready checks local storage and provider
 configuration without spending inference quota; remote connectivity is tested
-on requests. This distinction is exposed in its JSON.
+on requests. It remains ready in explicitly degraded safe mode when inference is
+not configured, but returns 503 if local storage is unavailable.
 
 ## Verification
 
@@ -79,7 +126,8 @@ This creates a synthetic test session and tests auth, two text turns,
 speech generation/transcription, voice chat, audio output and audit verification.
 It reads existing environment credentials without printing them.
 
-The release regression suite passes 93 tests against the locked dependencies.
+The release regression suite covers provider failure, bounded model fallback,
+voice-to-text degradation, audited replies and recovery against locked dependencies.
 The dependency audit of every pinned package found no known vulnerabilities
 on 2026-09-13. This is not a claim of a complete application security audit.
 Authentication checks use the ASGI request path, not a URL reconstructed from

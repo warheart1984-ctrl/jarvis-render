@@ -27,6 +27,7 @@ def run():
         response.raise_for_status()
         first = response.json()
         assert first["provider"] == "nvidia" and first["reply"]
+        assert first["inference_status"] == "accepted" and not first["safe_mode"]
         response = client.post(
             "/chat",
             json={
@@ -38,6 +39,7 @@ def run():
         response.raise_for_status()
         second = response.json()
         assert second["provider"] == "nvidia"
+        assert second["inference_status"] == "accepted" and not second["safe_mode"]
         response = client.post("/voice/speak", json={"session_id": first["session_id"], "turn_id": first["turn_id"]})
         response.raise_for_status()
         with wave.open(io.BytesIO(response.content), "rb") as wav:
@@ -75,6 +77,9 @@ def run():
                 {
                     "status": "passed",
                     "model": first["model"],
+                    "followup_model": second["model"],
+                    "fallback_used": first["fallback_used"] or second["fallback_used"],
+                    "provider_attempts": first["provider_attempts"],
                     "text_reply": first["reply"],
                     "followup": second["reply"],
                     "transcription": transcription,

@@ -33,7 +33,14 @@ async def speak(request: SpeakRequest) -> Response:
     turn = next((t for t in engine.get_trace(request.session_id) if t["turn_id"] == request.turn_id), None)
     if not turn:
         raise HTTPException(status_code=404, detail="Reply not found in this session.")
-    event = next((e for e in engine.get_audit(request.session_id) if e["turn_id"] == request.turn_id), None)
+    event = next(
+        (
+            e
+            for e in engine.get_audit(request.session_id)
+            if e["turn_id"] == request.turn_id and e["event_type"] == "spiral_turn"
+        ),
+        None,
+    )
     if (
         not event
         or not engine.verify_audit(request.session_id)["valid"]
@@ -43,6 +50,8 @@ async def speak(request: SpeakRequest) -> Response:
         raise HTTPException(status_code=409, detail="Reply audit could not be verified.")
     if len(turn["content"]) > 6000:
         raise HTTPException(status_code=400, detail="Reply is too long for speech. Please request a shorter answer.")
+    if json.loads(event["payload_json"]).get("safe_mode"):
+        raise HTTPException(status_code=409, detail="Safe-mode replies are text-only.")
     try:
         audio = await speech.synthesize(turn["content"])
     except ProviderError as exc:

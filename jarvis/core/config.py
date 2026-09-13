@@ -2,8 +2,39 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
+
+
+class ProviderSlot(BaseModel):
+    """Server-controlled endpoint with a secret reference, never an embedded key."""
+
+    provider: str = Field(min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=200)
+    base_url: str
+    api_key_env: str = Field(default="", pattern=r"^[A-Z0-9_]*$")
+    attempts: int = Field(default=1, ge=1, le=2)
+    timeout_seconds: float = Field(default=15, ge=1, le=30)
+    cooldown_seconds: int = Field(default=60, ge=1, le=3600)
+    model_config = {"extra": "forbid"}
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or (parsed.scheme != "https" and not (parsed.scheme == "http" and local))
+        ):
+            raise ValueError("Use HTTPS, or HTTP on loopback for a local model; do not embed credentials.")
+        return value.rstrip("/")
 
 
 class JarvisSettings(BaseSettings):
@@ -31,7 +62,10 @@ class JarvisSettings(BaseSettings):
     llm_base_url: str = "https://integrate.api.nvidia.com/v1"
     llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     llm_temperature: float = 0.7
-    llm_timeout_seconds: float = 45.0
+    llm_timeout_seconds: float = Field(default=45.0, ge=1, le=50)
+    llm_attempt_timeout_seconds: float = Field(default=15.0, ge=1, le=30)
+    llm_slots: list[ProviderSlot] = Field(default_factory=list, max_length=3)
+    llm_fallback_models: str = "openai/gpt-oss-20b,z-ai/glm-5.3-flash"
     llm_max_tokens: int = Field(default=768, ge=64, le=4096)
     speech_asr_url: str = (
         "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions"

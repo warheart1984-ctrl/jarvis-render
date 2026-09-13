@@ -60,9 +60,9 @@ async def test_nvidia_sends_valid_history_and_bounded_request(monkeypatch, nvidi
 )
 async def test_provider_failure_is_not_success(monkeypatch, nvidia, status, body):
     mock_provider(monkeypatch, lambda req: httpx.Response(status, json=body))
-    with pytest.raises(llm.ProviderError) as error:
-        await llm.generate_llm_reply([{"role": "user", "content": "Hello"}])
-    assert "nvapi-test-only" not in str(error.value)
+    result = await llm.generate_llm_reply([{"role": "user", "content": "Hello"}])
+    assert result.safe_mode and result.inference_status in {"unavailable", "unknown"}
+    assert "nvapi-test-only" not in json.dumps(result.attempts)
 
 
 @pytest.mark.asyncio
@@ -71,9 +71,10 @@ async def test_timeout_is_sanitized(monkeypatch, nvidia):
         raise httpx.ReadTimeout("private provider detail nvapi-test-only", request=req)
 
     mock_provider(monkeypatch, handler)
-    with pytest.raises(llm.ProviderError, match="timed out") as error:
-        await llm.generate_llm_reply([{"role": "user", "content": "Hello"}])
-    assert "nvapi" not in str(error.value)
+    result = await llm.generate_llm_reply([{"role": "user", "content": "Hello"}])
+    assert result.safe_mode and result.inference_status == "unavailable"
+    assert "timed out" in result.attempts[0]["reason"]
+    assert "nvapi" not in json.dumps(result.attempts)
 
 
 @pytest.mark.asyncio

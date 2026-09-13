@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from jarvis.brain.llm import provider_config
+from jarvis.brain.llm import configured_models, configured_slots, inference_configured, provider_config
 from jarvis.core.config import settings
 from jarvis.persistence import AuditLedger
 from jarvis.routes.chat import engine
@@ -53,9 +53,7 @@ async def service_boundary(request: Request, call_next):
     """Protect state-changing and diagnostic routes when deployed with a token."""
     # Match the router's actual path, never a URL reconstructed from the Host header.
     path = request.scope["path"]
-    protected = path in {"/chat", "/capabilities"} or path.startswith(
-        ("/sessions/", "/memory/", "/state/", "/voice/")
-    )
+    protected = path in {"/chat", "/capabilities"} or path.startswith(("/sessions/", "/memory/", "/state/", "/voice/"))
     request_id = request.headers.get("X-Request-ID") or uuid4().hex
     request.state.request_id = request_id
     if protected:
@@ -84,9 +82,7 @@ async def service_boundary(request: Request, call_next):
     if protected and (expected or settings.environment.lower() in {"production", "prod"}):
         supplied = request.headers.get("X-Jarvis-Service-Token", "")
         if not expected or not secrets.compare_digest(supplied, expected):
-            _security_audit.append(
-                uuid4().hex, "security", "auth_failure", {"path": path, "request_id": request_id}
-            )
+            _security_audit.append(uuid4().hex, "security", "auth_failure", {"path": path, "request_id": request_id})
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized service request", "request_id": request_id},
@@ -142,13 +138,25 @@ async def capabilities() -> dict[str, object]:
     provider, key = provider_config()
     return {
         "provider": provider,
-        "model": settings.llm_model,
-        "chat_configured": bool(key),
+        "model": configured_models()[0] if configured_models() else settings.llm_model,
+        "fallback_models": configured_models()[1:],
+        "slots": [
+            {
+                "provider": s.provider,
+                "model": s.model,
+                "attempts": s.attempts,
+                "timeout_seconds": s.timeout_seconds,
+                "cooldown_seconds": s.cooldown_seconds,
+            }
+            for s in configured_slots()
+        ],
+        "safe_mode_available": True,
+        "chat_configured": inference_configured(),
         "speech_configured": bool(settings.nvidia_api_key),
         "speech_provider": "nvidia",
         "voice_transport": "turn_based",
         "full_duplex": False,
-        "build": "jarvis-chat-voice-v2",
+        "build": "jarvis-chat-voice-v3",
     }
 
 
@@ -163,15 +171,17 @@ async def readiness() -> JSONResponse:
     except sqlite3.Error:
         return JSONResponse(status_code=503, content={"status": "not_ready", "storage": "unavailable"})
     provider, key = provider_config()
-    configured = bool(key) or provider in {"", "mock", "local"}
+    configured = inference_configured()
     return JSONResponse(
-        status_code=200 if configured else 503,
+        status_code=200,
         content={
-            "status": "ready" if configured else "not_ready",
+            "status": "ready",
             "storage": "ok",
             "provider": provider,
-            "provider_configured": bool(key),
+            "provider_configured": configured,
+            "safe_mode_available": True,
+            "degraded": not configured,
             "provider_connectivity": "checked_on_request",
-            "build": "jarvis-chat-voice-v2",
+            "build": "jarvis-chat-voice-v3",
         },
     )

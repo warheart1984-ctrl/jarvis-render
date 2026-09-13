@@ -13,6 +13,11 @@ const active = storage.read();
 if (active?.user) $("user-id").value = active.user;
 function error(message = "") { $("error").textContent = message; $("error").hidden = !message; }
 function activity(message) { $("activity").textContent = message; }
+function textMode(reason) {
+  $("mode").value = "text"; $("mic").hidden = true; $("voice-note").hidden = true;
+  $("spoken").checked = false; stopAudio();
+  error(reason + " Switched to text mode; you can keep typing."); activity("Text chat ready.");
+}
 function controls() {
   const locked = busy || !!recording || recordingStart;
   $("send").disabled = !connected || locked || recovered;
@@ -70,11 +75,11 @@ async function speak(turn) {
     if (generation !== speechGeneration) return;
     audioUrl = URL.createObjectURL(blob); playback = new Audio(audioUrl);
     playback.onended = () => { stopAudio(); activity("Ready."); };
-    playback.onerror = () => { stopAudio(); error("Audio could not play. Your text reply is still available."); };
+    playback.onerror = () => textMode("Audio could not play. Your text reply is still available.");
     await playback.play(); activity("Speaking…");
   } catch (e) {
     if (generation !== speechGeneration) return;
-    stopAudio(); error("Speech playback: " + e.message); activity("Text reply available.");
+    textMode("Speech playback: " + e.message);
   }
 }
 function message(role, text, response = null) {
@@ -85,10 +90,13 @@ function message(role, text, response = null) {
   article.append(label, body);
   if (response) {
     const meta = document.createElement("div"); meta.className = "message-meta";
-    meta.textContent = response.provider + " · " + response.model + (response.read_only ? " · read-only discussion" : "");
+    meta.textContent = response.provider + " · " + response.model
+      + (response.safe_mode ? " · SAFE MODE · no inference confirmed" : response.fallback_used ? " · backup model" : "")
+      + (response.read_only ? " · read-only discussion" : "");
     article.append(meta);
     const replay = document.createElement("button"); replay.type = "button"; replay.className = "replay secondary";
-    replay.textContent = "Play reply"; replay.onclick = () => speak(response.turn_id); article.append(replay);
+    replay.textContent = "Play reply"; replay.disabled = !caps.speech_configured || response.safe_mode;
+    replay.onclick = () => speak(response.turn_id); article.append(replay);
   }
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }
@@ -128,6 +136,7 @@ $("connect-form").onsubmit = async e => {
     connected = true;
     $("connection").textContent = caps.chat_configured ? caps.provider + " chat configured" : "Local responder · NVIDIA not configured";
     $("provider").textContent = caps.provider + " / " + caps.model;
+    if (!caps.speech_configured && $("mode").value === "voice") textMode("Voice is not configured.");
     const saved = storage.read();
     if (!session && saved?.session && saved.user === $("user-id").value) {
       const data = await post("/sessions/resume", { session_id: saved.session, user_id: saved.user });
@@ -159,7 +168,9 @@ async function send(inputMode = "text") {
     setSession(d.session_id); message("user", text); message("jarvis", d.reply, d); decision(d); $("message").value = "";
     try { await governance(); } catch (e) { error("Reply received, but governance refresh failed: " + e.message); }
     activity("Reply received.");
-    if ($("spoken").checked) await speak(d.turn_id);
+    if (d.safe_mode) { textMode("Inference " + d.inference_status + ". Jarvis is in basic safe-response mode."); return; }
+    // Speech is optional: typing must not wait for the speech service.
+    if ($("spoken").checked) speak(d.turn_id);
   } catch (e) { error(e.message + " Your message is still in the composer."); activity("Request failed."); }
   finally { busy = false; controls(); $("message").focus(); }
 }
@@ -169,6 +180,7 @@ $("message").onkeydown = e => {
 };
 $("mode").onchange = () => {
   const voice = $("mode").value === "voice"; $("mic").hidden = !voice; $("voice-note").hidden = !voice;
+  if (voice && connected && !caps.speech_configured) { textMode("Voice is not configured."); return; }
   $("spoken").checked = voice; if (!voice) stopAudio();
 };
 $("spoken").onchange = () => { if (!$("spoken").checked) stopAudio(); };
@@ -182,19 +194,19 @@ async function finishRecording() {
     const wav = await capture.stop();
     const d = await request("/voice/transcribe", { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
     $("message").value = d.text; busy = false; controls(); await send("voice");
-  } catch (e) { error(e.message); activity("Recording ended."); }
+  } catch (e) { textMode("Transcription: " + e.message); }
   finally { busy = false; controls(); }
 }
 $("mic").onclick = async () => {
   if (recording) { await finishRecording(); return; }
   if (busy || recordingStart) return;
-  if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) { error("Microphone access is unavailable in this browser. Open Jarvis in Chrome or Edge over HTTPS."); return; }
+  if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) { textMode("Microphone access is unavailable in this browser."); return; }
   recordingStart = true; controls(); error(); stopAudio();
   try {
     recording = await createRecorder(); $("mic").textContent = "Stop & send";
     activity("● Recording · stop when finished");
     timer = setTimeout(finishRecording, 29500);
-  } catch (e) { error("Microphone could not start: " + e.message); activity("Microphone unavailable."); }
+  } catch (e) { textMode("Microphone could not start: " + e.message); }
   finally { recordingStart = false; controls(); }
 };
 window.addEventListener("pagehide", () => { clearTimeout(timer); recording?.stop(); stopAudio(); });

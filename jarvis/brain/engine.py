@@ -136,7 +136,7 @@ class JarvisEngine:
 
         async with session_lock:
             # Work on a copy so a failed request cannot advance the live session.
-            state = state.model_copy(deep=True)
+            state = self._sessions[state.session_id].model_copy(deep=True)
             # --- 1. LISTEN ---
             biofeedback = request.biofeedback or state.biofeedback
 
@@ -173,6 +173,12 @@ class JarvisEngine:
 
             # --- 4. RESPOND ---
             local_reply, reasoning_trace = generate_response(state, request.message)
+            turn_id = uuid4().hex
+            correlation_id = uuid4().hex
+
+            def audit_attempt(entry: dict[str, Any]) -> None:
+                self.audit.append(uuid4().hex, state.session_id, "inference_attempt", entry, turn_id=turn_id)
+
             llm_result = None
             # Language-only clarification is allowed even when consequential actions
             # are blocked. No tools, external memory writes or execution are offered.
@@ -196,12 +202,18 @@ class JarvisEngine:
                             },
                             *state.conversation_history[-10:],
                             {"role": "user", "content": request.message},
-                        ]
+                        ],
+                        transaction_id=turn_id,
+                        correlation_id=correlation_id,
+                        audit_attempt=audit_attempt,
                     )
                 except ProviderError as exc:
                     # A missing dependency is not an apparently successful local answer.
                     raise ProviderError(str(exc)) from None
             reply = llm_result.reply if llm_result else local_reply
+            if llm_result and llm_result.safe_mode:
+                reasons.append("inference " + llm_result.inference_status + "; text-only safe mode")
+                decision = "fail_closed"
             if decision == "fail_closed" and not llm_result:
                 reply = (
                     "I’m pausing consequential action because the available signals are uncertain. "
@@ -223,7 +235,6 @@ class JarvisEngine:
             if request.memory_consent and decision == "answer":
                 state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
-            turn_id = uuid4().hex
             turn = SpiralTurn(
                 turn_id=turn_id,
                 session_id=state.session_id,
@@ -236,6 +247,7 @@ class JarvisEngine:
                     {"type": "emotion", "rationale": emotion.rationale},
                     {"type": "channel", "input_mode": request.input_mode},
                     {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
+                    {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
                 ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
@@ -267,6 +279,12 @@ class JarvisEngine:
                         "input_mode": request.input_mode,
                         "memory_consent": request.memory_consent,
                         "cost_reported": llm_result.cost_reported if llm_result else True,
+                        "provider_attempts": llm_result.attempts if llm_result else [],
+                        "fallback_used": llm_result.fallback_used if llm_result else False,
+                        "safe_mode": llm_result.safe_mode if llm_result else False,
+                        "inference_status": llm_result.inference_status if llm_result else "not_requested",
+                        "transaction_id": turn_id,
+                        "correlation_id": correlation_id,
                     },
                 },
                 {
@@ -321,6 +339,12 @@ class JarvisEngine:
                 read_only=decision == "fail_closed",
                 cost_reported=llm_result.cost_reported if llm_result else True,
                 input_mode=request.input_mode,
+                provider_attempts=llm_result.attempts if llm_result else [],
+                fallback_used=llm_result.fallback_used if llm_result else False,
+                safe_mode=llm_result.safe_mode if llm_result else False,
+                inference_status=llm_result.inference_status if llm_result else "not_requested",
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
             )
 
     # ------------------------------------------------------------------
