@@ -91,3 +91,13 @@ Jarvis works in two modes:
 1. **Standalone** — When the Spiral backend is unavailable, Jarvis uses its built-in spiral evolution engine. All conversation, emotion, and memory features work independently.
 
 2. **Connected** — When the Spiral backend is running, Jarvis syncs state with V1 chat, V7 memory, and V8 session management. This enables the full Spiral Intelligence feature set including autonomous loops, scoring, and the policy engine.
+
+## Project Infinity / EvolveEngine
+
+Project Infinity's bounded evolution service is configured with
+`JARVIS_INFINITY_API_BASE` and enabled with `JARVIS_INFINITY_ENABLED=true`.
+Jarvis targets the documented `POST /evolve` contract described in
+`G:\Project Infinity\docs\contracts\EVOLVE_ENGINE_CONTRACT.md`, including
+bounded generation, evaluation, population, and wall-time limits. If the
+service is disabled or unavailable, Jarvis remains in its local bounded lane
+and does not claim that an external evolution run succeeded.

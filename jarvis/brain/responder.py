@@ -67,9 +67,7 @@ def generate_response(state: JarvisState, user_message: str) -> tuple[str, list[
     if confidence > 0.85:
         reply_parts.append(f"My confidence in this direction is high ({confidence:.0%}).")
     elif confidence < 0.45:
-        reply_parts.append(
-            "I'm still building confidence here — let me know if I should explore a different angle."
-        )
+        reply_parts.append("I'm still building confidence here — let me know if I should explore a different angle.")
 
     reply = " ".join(reply_parts)
     return reply, trace
@@ -132,10 +130,7 @@ def _action_response(message: str, intent: IntentMode, energy: float) -> str:
             "artifact — structured, testable, and ready to iterate on."
         )
     if "deploy" in lower or "ship" in lower or "launch" in lower:
-        return (
-            "Preparing for deployment. I'll verify all systems, run a final check, "
-            "and push toward launch."
-        )
+        return "Preparing for deployment. I'll verify all systems, run a final check, and push toward launch."
     return (
         f"Acting with '{intent.value}' intent at energy {energy:.0%}. "
         "I'm producing the most useful output I can for this turn."

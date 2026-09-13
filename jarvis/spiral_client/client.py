@@ -39,7 +39,8 @@ class SpiralClient:
     async def _get_client(self) -> httpx.AsyncClient:
         async with self._client_lock:
             if self._client is None or self._client.is_closed:
-                self._client = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
+                headers = {"X-Jarvis-Service-Token": settings.service_token} if settings.service_token else {}
+                self._client = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout, headers=headers)
             return self._client
 
     async def close(self) -> None:
@@ -186,6 +187,20 @@ class SpiralClient:
         if session_id:
             payload["session_id"] = session_id
         return await self._post("/chat", payload)
+
+    async def spiral_turn(
+        self, session_id: str, prompt: str, energy: float, intent: IntentMode = IntentMode.TRANSFORM
+    ) -> dict[str, Any]:
+        """Advance the standalone Spiral Backend state for one Jarvis turn."""
+        return await self._post(
+            "/spiral/turn",
+            {
+                "session_id": session_id,
+                "prompt": prompt,
+                "energy": energy,
+                "intent": intent.value,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Internal HTTP helpers

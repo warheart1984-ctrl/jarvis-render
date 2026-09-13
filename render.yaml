@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: jarvis
+    env: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health/ready
+    envVars:
+      - key: JARVIS_ENVIRONMENT
+        value: production
+      - key: JARVIS_MEMORY_DB_PATH
+        value: /data/jarvis.sqlite3
+      - key: JARVIS_CORS_ORIGINS
+        sync: false
+      - key: JARVIS_SERVICE_TOKEN
+        sync: false
+    disk:
+      name: jarvis-memory
+      mountPath: /data
+      sizeGB: 1

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import random
-
 from jarvis.models.jarvis_types import EmotionState, SpiralPhase
 from jarvis.models.spiral_types import IntentMode, SpiralCoreState
 
@@ -62,8 +60,11 @@ def evolve_spiral(
     # Intent evolution — shifts based on emotional context and turn progression.
     new_intent = _evolve_intent(intent, emotion, confidence, turn_count)
 
-    # Energy nudges toward the emotional centre.
-    energy_delta = random.uniform(-0.03, 0.03)
+    # Bounded engine: the same state and inputs always produce the same
+    # transition.  Turn phase supplies a small deterministic exploration
+    # signal instead of the former unbounded/random placeholder nudge.
+    phase_signal = ((turn_count % 7) - 3) / 100.0
+    energy_delta = phase_signal
     if emotion.urgency > 0.6:
         energy_delta += 0.04
     if emotion.stress > 0.6:

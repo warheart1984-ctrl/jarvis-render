@@ -49,6 +49,28 @@ class ChatResponse(BaseModel):
     emotion: dict[str, Any]
     memory_snapshot: dict[str, Any]
     reasoning_trace: list[str] = Field(default_factory=list)
+    turn_id: str = ""
+    decision: str = "answer"
+    uncertainty: float = 0.5
+    fail_closed_reason: str | None = None
+
+
+class SpiralTurn(BaseModel):
+    turn_id: str
+    session_id: str
+    timestamp: datetime
+    decision: str
+    uncertainty: float = Field(..., ge=0.0, le=1.0)
+    stress: float = Field(..., ge=0.0, le=1.0)
+    fail_closed_reason: str | None = None
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    content: str
+    content_sha256: str
+    provider: str = "local"
+    model: str = "bounded-local"
+    cost_usd: float = 0.0
+    latency_ms: float = 0.0
+    backend_status: str = "standalone"
 
 
 class JarvisMemoryEntry(BaseModel):

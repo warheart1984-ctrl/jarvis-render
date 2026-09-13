@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Jarvis Continuity Console</title>
+<style>body{font:15px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}input,button{padding:.6rem;margin:.25rem;background:#222;color:#eee;border:1px solid #555}button{cursor:pointer}pre{white-space:pre-wrap;background:#181818;padding:1rem;border-radius:6px}section{margin:1rem 0}</style></head>
+<body><h1>Jarvis Continuity Console</h1>
+<section><input id="session" placeholder="session id"><input id="token" type="password" placeholder="service token"><button onclick="loadAll()">Load audit and trace</button></section>
+<section><h2>Recovery / read-only state</h2><pre id="state">No session loaded.</pre></section>
+<section><h2>Audit trace</h2><pre id="audit"></pre></section>
+<section><h2>Decision trace</h2><pre id="trace"></pre></section>
+<section><h2>Memory consent / conflict / supersession</h2><p>Durable writes and supersession remain API-governed. The console displays their verified audit state; mutations require the authenticated API contract.</p></section>
+<script>
+async function get(path){const token=document.querySelector('#token').value;const r=await fetch(path,{headers:{'X-Jarvis-Service-Token':token}});return {status:r.status,data:await r.json()};}
+async function loadAll(){const s=document.querySelector('#session').value;if(!s)return;const [a,t,st]=await Promise.all([get(`/sessions/${s}/audit`),get(`/sessions/${s}/trace`),get(`/state/${s}`)]);document.querySelector('#audit').textContent=JSON.stringify(a,null,2);document.querySelector('#trace').textContent=JSON.stringify(t,null,2);document.querySelector('#state').textContent=JSON.stringify(st,null,2);}
+</script></body></html>

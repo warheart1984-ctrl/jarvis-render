@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -17,13 +19,18 @@ from jarvis.brain.memory import (
 )
 from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
+from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.models.jarvis_types import (
     ChatRequest,
     ChatResponse,
     JarvisState,
+    SpiralTurn,
 )
+from jarvis.persistence import AuditLedger, JarvisStore
+from jarvis.persistence.reviver import ReviverLedger
 from jarvis.spiral_client import SpiralClient
+from jarvis.spiral_client.infinity import ProjectInfinityClient
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +42,25 @@ class JarvisEngine:
     and optionally syncs state with the Spiral Intelligence backend.
     """
 
-    def __init__(self, spiral_client: SpiralClient | None = None) -> None:
+    def __init__(self, spiral_client: SpiralClient | None = None, store: JarvisStore | None = None) -> None:
         self._sessions: dict[str, JarvisState] = {}
         self._global_lock = asyncio.Lock()
         self._session_locks: dict[str, asyncio.Lock] = {}
         self.spiral = spiral_client or SpiralClient()
+        self.store = store or JarvisStore(settings.memory_db_path)
+        self.audit = AuditLedger(self.store.path)
+        self.reviver = ReviverLedger(self.store.path)
+        self._read_only_sessions: set[str] = set()
+        self.continuity = (
+            ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token)
+            if settings.continuity_ledger_url
+            else None
+        )
+        self.infinity = (
+            ProjectInfinityClient(settings.infinity_api_base, settings.service_token)
+            if settings.infinity_enabled and settings.infinity_api_base
+            else None
+        )
 
     # ------------------------------------------------------------------
     # Session management
@@ -69,6 +90,14 @@ class JarvisEngine:
                 created_at=now,
                 updated_at=now,
             )
+            if session_id:
+                recovered = self.reviver.recover(new_id, self.audit)
+                if recovered:
+                    try:
+                        state = JarvisState.model_validate(recovered["state"])
+                    except Exception:
+                        pass
+                    self._read_only_sessions.add(new_id)
             self._sessions[new_id] = state
             self._session_locks[new_id] = asyncio.Lock()
             return state
@@ -97,6 +126,8 @@ class JarvisEngine:
         """
 
         state = await self.get_or_create_session(request.user_id, request.session_id)
+        if state.session_id in self._read_only_sessions:
+            raise ValueError("Session is read-only pending conflict resolution.")
         session_lock = await self._get_session_lock(state.session_id)
 
         async with session_lock:
@@ -126,9 +157,22 @@ class JarvisEngine:
             state.intent = new_intent
             state.energy = new_energy
             state.confidence = confidence
+            uncertainty = round(1.0 - confidence, 4)
+            reasons = []
+            if uncertainty >= 0.5:
+                reasons.append("uncertainty at or above safe execution threshold")
+            if emotion.stress > 0.8:
+                reasons.append("stress above safe execution threshold")
+            decision = "fail_closed" if reasons else "answer"
 
             # --- 4. RESPOND ---
             reply, reasoning_trace = generate_response(state, request.message)
+            if decision == "fail_closed":
+                reply = (
+                    "I’m pausing consequential action because the available signals are uncertain. "
+                    "I can clarify the goal or continue with read-only planning."
+                )
+                reasoning_trace.append("fail-closed safety lane applied")
 
             # --- 5. REFLECT ---
             state.conversation_history = add_to_conversation_history(state, request.message, reply)
@@ -139,9 +183,63 @@ class JarvisEngine:
 
             state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
-
+            turn_id = uuid4().hex
+            turn = SpiralTurn(
+                turn_id=turn_id,
+                session_id=state.session_id,
+                timestamp=datetime.now(timezone.utc),
+                decision=decision,
+                uncertainty=uncertainty,
+                stress=emotion.stress,
+                fail_closed_reason="; ".join(reasons) if reasons else None,
+                evidence=[{"type": "emotion", "rationale": emotion.rationale}],
+                content=reply,
+                content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
+            )
             # --- 6. EVOLVE (sync with Spiral backend if available) ---
-            await self._sync_with_spiral(state, request.message, reply)
+            sync_started = time.perf_counter()
+            backend_status = await self._sync_with_spiral(state, request.message, reply)
+            turn.latency_ms = round((time.perf_counter() - sync_started) * 1000, 3)
+            turn.provider = settings.llm_provider
+            turn.model = settings.llm_model
+            turn.backend_status = backend_status
+            self.store.save_turn_bundle(
+                turn,
+                {
+                    "event_id": turn_id,
+                    "event_type": "spiral_turn",
+                    "timestamp": turn.timestamp.isoformat(),
+                    "payload": {
+                        "decision": decision,
+                        "uncertainty": uncertainty,
+                        "stress": emotion.stress,
+                        "reason": turn.fail_closed_reason,
+                        "content_sha256": turn.content_sha256,
+                    },
+                },
+                {
+                    "id": memory_entry.memory_id,
+                    "session_id": state.session_id,
+                    "content": memory_entry.content,
+                    "created_at": memory_entry.created_at,
+                    "confidence": memory_entry.importance,
+                    "type": memory_entry.category,
+                    "subject": state.user_id,
+                    "evidence": [{"source": "chat"}],
+                }
+                if memory_entry
+                else None,
+            )
+
+            audit_event = self.audit.list(state.session_id)[-1]
+            self.reviver.save(
+                checkpoint_id=f"checkpoint-{turn_id}",
+                session_id=state.session_id,
+                turn_id=turn_id,
+                audit_hash=audit_event["event_hash"],
+                state=state.model_dump(mode="json"),
+                verified=True,
+            )
 
             self._save_session(state)
 
@@ -160,6 +258,10 @@ class JarvisEngine:
                     "preferences": state.preferences,
                 },
                 reasoning_trace=reasoning_trace,
+                turn_id=turn_id,
+                decision=decision,
+                uncertainty=uncertainty,
+                fail_closed_reason=turn.fail_closed_reason,
             )
 
     # ------------------------------------------------------------------
@@ -198,6 +300,22 @@ class JarvisEngine:
             "preferences": state.preferences,
         }
 
+    def get_trace(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent structured, user-safe decision traces."""
+        return self.store.load_session_turns(session_id, limit)
+
+    def get_audit(self, session_id: str) -> list[dict[str, Any]]:
+        return self.audit.list(session_id)
+
+    def verify_audit(self, session_id: str) -> dict[str, Any]:
+        return {"session_id": session_id, "valid": self.audit.verify(session_id)}
+
+    def set_read_only(self, session_id: str) -> None:
+        self._read_only_sessions.add(session_id)
+
+    def is_read_only(self, session_id: str) -> bool:
+        return session_id in self._read_only_sessions
+
     def clear_memory(self, session_id: str) -> dict[str, str]:
         state = self.get_session(session_id)
         if state is None:
@@ -214,12 +332,26 @@ class JarvisEngine:
     # Spiral backend sync
     # ------------------------------------------------------------------
 
-    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> None:
+    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
         """Optionally push state to the Spiral Intelligence backend."""
 
         try:
+            if self.infinity:
+                await self.infinity.evolve(
+                    job_id=f"jarvis-{state.session_id}-{state.turn_count}",
+                    jarvis_run_id=state.session_id,
+                    task=user_message,
+                    initial_candidate=reply,
+                )
             if not await self.spiral.is_available():
-                return
+                return "unavailable"
+
+            await self.spiral.spiral_turn(
+                session_id=state.session_id,
+                prompt=user_message,
+                energy=state.energy,
+                intent=state.intent,
+            )
 
             # Push a chat turn to the V1 backend.
             await self.spiral.spiral_chat(
@@ -238,5 +370,7 @@ class JarvisEngine:
                 score=state.confidence,
                 notes=f"Jarvis turn {state.turn_count}: {user_message[:100]}",
             )
+            return "connected"
         except Exception as exc:
             logger.debug("Spiral sync skipped: %s", exc)
+            return "error"
