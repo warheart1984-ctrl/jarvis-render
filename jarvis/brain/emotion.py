@@ -1,4 +1,8 @@
-"""Emotion reasoning for Jarvis — infers emotional context from conversation and biofeedback."""
+"""v0 keyword-heuristic emotion classifier.
+
+Scores a message against hardcoded keyword lists and optional BiofeedbackState
+fields. This is not a trained classifier, LLM judgment, or a live sensor pipeline.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +24,12 @@ def _keyword_score(text: str, keywords: list[str]) -> float:
 
 
 def infer_emotion(message: str, biofeedback: BiofeedbackState | None = None) -> EmotionState:
-    """Analyse the user message and optional biofeedback to produce an emotional context."""
+    """Return a v0 heuristic EmotionState from keywords plus optional biofeedback.
+
+    Each keyword hit adds ~0.25 (capped 0–1). If/elif thresholds pick a label.
+    Biofeedback (heart rate, voice intensity, emotional tone) is applied only
+    when a caller supplies BiofeedbackState; defaults are static placeholders.
+    """
 
     bio = biofeedback or BiofeedbackState()
 

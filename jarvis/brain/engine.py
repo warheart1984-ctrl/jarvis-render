@@ -1,4 +1,4 @@
-"""Jarvis engine — orchestrates conversation, spiral evolution, memory, and response generation."""
+"""Jarvis engine — orchestrates conversation, v0 heuristic state, memory, and replies."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 class JarvisEngine:
     """The main Jarvis orchestrator.
 
-    Manages sessions, processes user messages through the spiral reasoning loop,
+    Manages sessions, runs the v0 emotion classifier and spiral-state tracker,
     and optionally syncs state with the Spiral Intelligence backend.
     """
 
@@ -122,15 +122,15 @@ class JarvisEngine:
     # ------------------------------------------------------------------
 
     async def chat(self, request: ChatRequest, *, recall_owner: str | None = None) -> ChatResponse:
-        """Process a user message through the full Jarvis spiral loop.
+        """Process a user message through the six-step turn pipeline.
 
         Steps:
         1. LISTEN  — receive the message and resolve the session
-        2. ORIENT  — infer emotion, determine phase, detect intent signals
-        3. REASON  — evolve spiral state based on emotional and contextual signals
+        2. ORIENT  — v0 keyword emotion classifier + phase label
+        3. REASON  — advance the bounded five-variable spiral-state tracker
         4. RESPOND — generate a contextual reply
         5. REFLECT — extract memories and update preferences
-        6. EVOLVE  — mutate the spiral for the next turn
+        6. EVOLVE  — persist the turn; optional backend sync (disabled pending EMR)
         """
 
         # This optional principal comes from token verification in the server route,

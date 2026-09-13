@@ -1,4 +1,9 @@
-"""Spiral state evolution — updates Jarvis's spiral core and intent based on conversation flow."""
+"""v0 bounded five-variable spiral-state tracker.
+
+Updates radius, angle, angular_velocity, expansion, and coherence with fixed
+increments gated by confidence, stress, emotion, and intent. Angle/radius are
+tracked metaphors, not vector geometry feeding downstream math.
+"""
 
 from __future__ import annotations
 
@@ -18,12 +23,13 @@ def evolve_spiral(
     confidence: float,
     turn_count: int,
 ) -> tuple[SpiralCoreState, IntentMode, float]:
-    """Evolve the spiral state based on the current conversation context.
+    """Advance the v0 spiral-state tracker.
 
-    Returns the updated (spiral_core, intent, energy) tuple.
+    Deterministic: the same state and inputs always produce the same
+    (spiral_core, intent, energy) transition. Not computational spiral geometry.
     """
 
-    # Angle always advances — the spiral keeps turning.
+    # Angle is a tracked metaphor that always advances; it is not used as geometry.
     new_angle = (core.angle + 15.0 + energy * 10.0) % 360.0
 
     # Radius grows with confidence and contracts under stress.
@@ -61,8 +67,9 @@ def evolve_spiral(
     new_intent = _evolve_intent(intent, emotion, confidence, turn_count)
 
     # Bounded engine: the same state and inputs always produce the same
-    # transition.  Turn phase supplies a small deterministic exploration
+    # transition. Turn phase supplies a small deterministic exploration
     # signal instead of the former unbounded/random placeholder nudge.
+    # Keep this deterministic — do not reintroduce random energy jitter.
     phase_signal = ((turn_count % 7) - 3) / 100.0
     energy_delta = phase_signal
     if emotion.urgency > 0.6:
@@ -80,7 +87,7 @@ def _evolve_intent(
     confidence: float,
     turn_count: int,
 ) -> IntentMode:
-    """Decide whether to shift the intent mode based on conversation signals."""
+    """v0 intent switch: a small decision tree, plus a forced cycle every 5 turns."""
 
     # High stress + low confidence → destroy (challenge assumptions, tear down what isn't working).
     if emotion.stress > 0.6 and confidence < 0.5:
@@ -112,7 +119,7 @@ def determine_phase(
     confidence: float,
     turn_count: int,
 ) -> SpiralPhase:
-    """Decide which spiral phase Jarvis should operate in for this turn."""
+    """Pick a pipeline phase label from keywords, turn count, and confidence."""
 
     lower = message.lower()
 

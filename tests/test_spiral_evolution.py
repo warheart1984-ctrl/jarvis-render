@@ -1,4 +1,4 @@
-"""Tests for the spiral evolution module."""
+"""Tests for the v0 bounded five-variable spiral-state tracker."""
 
 from __future__ import annotations
 

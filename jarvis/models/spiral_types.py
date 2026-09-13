@@ -35,6 +35,8 @@ class EmotionalTone(str, Enum):
 
 
 class BiofeedbackState(BaseModel):
+    """Optional caller-supplied signals. Defaults are placeholders, not live sensors."""
+
     heart_rate: int = 88
     breath_rate: int = 15
     voice_intensity: float = 0.62
@@ -43,6 +45,8 @@ class BiofeedbackState(BaseModel):
 
 
 class SpiralCoreState(BaseModel):
+    """v0 five-variable tracker. Angle/radius are metaphors, not geometry inputs."""
+
     radius: float = 0.58
     angle: float = 180.0
     angular_velocity: float = 0.62

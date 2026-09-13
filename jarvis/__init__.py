@@ -1,1 +1,1 @@
-"""Jarvis — a conversational AI layer powered by Spiral Intelligence."""
+"""Jarvis — conversational FastAPI layer with v0 heuristic emotion and spiral-state trackers."""

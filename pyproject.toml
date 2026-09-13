@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "jarvis"
 version = "0.1.0"
-description = "Jarvis — a conversational AI layer powered by Spiral Intelligence"
+description = "Jarvis — conversational FastAPI layer with v0 heuristic emotion and spiral-state trackers"
 authors = ["Jon Halstead"]
 readme = "README.md"
 packages = [{include = "jarvis"}]
