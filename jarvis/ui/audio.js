@@ -1,3 +1,14 @@
+export function disposePlayback(audio) {
+  if (!audio) return;
+  // Clearing the source can emit an error event after normal playback ends.
+  // Detach callbacks first so deliberate cleanup never activates safe mode.
+  audio.onended = null;
+  audio.onerror = null;
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+}
+
 export function encodeWav(chunks, sourceRate) {
   const length = chunks.reduce((sum, c) => sum + c.length, 0);
   const input = new Float32Array(length);

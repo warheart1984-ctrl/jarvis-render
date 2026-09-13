@@ -1,4 +1,4 @@
-import { createRecorder } from "./audio.js";
+import { createRecorder, disposePlayback } from "./audio.js";
 
 const $ = id => document.getElementById(id);
 let session = "", connected = false, busy = false, recovered = false;
@@ -60,12 +60,13 @@ const post = (path, data, options = {}, audio = false) => request(path, {
 function stopAudio() {
   speechGeneration++;
   speechAbort?.abort(); speechAbort = null;
-  if (playback) { playback.pause(); playback.src = ""; playback = null; }
+  disposePlayback(playback); playback = null;
   if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
   $("stop-audio").disabled = true;
 }
 async function speak(turn) {
   stopAudio();
+  error();
   const generation = speechGeneration;
   speechAbort = new AbortController();
   $("stop-audio").disabled = false;
@@ -74,8 +75,15 @@ async function speak(turn) {
     const blob = await post("/voice/speak", { session_id: session, turn_id: turn }, { signal: speechAbort.signal }, true);
     if (generation !== speechGeneration) return;
     audioUrl = URL.createObjectURL(blob); playback = new Audio(audioUrl);
-    playback.onended = () => { stopAudio(); activity("Ready."); };
-    playback.onerror = () => textMode("Audio could not play. Your text reply is still available.");
+    playback.onended = () => {
+      if (generation !== speechGeneration) return;
+      stopAudio(); activity("Ready.");
+    };
+    playback.onerror = () => {
+      if (generation !== speechGeneration) return;
+      const code = playback?.error?.code;
+      textMode("Audio could not play" + (code ? " (media error " + code + ")" : "") + ". Your text reply is still available.");
+    };
     await playback.play(); activity("Speaking…");
   } catch (e) {
     if (generation !== speechGeneration) return;

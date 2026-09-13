@@ -121,6 +121,10 @@ Run pytest with the declared dev dependencies and a writable, fresh --basetemp.
 On Windows the sandbox ACL can prevent pytest cleanup; run in the normal
 user environment using the same isolated test runtime.
 
+Run `node --test tests/ui_audio.test.mjs` with Node 22+ for the browser audio
+encoder and playback-cleanup regressions. In restricted environments that block
+test subprocesses, use `node --test --test-isolation=none tests/ui_audio.test.mjs`.
+
 Inside the deployed Render Shell: python -m jarvis.smoke
 This creates a synthetic test session and tests auth, two text turns,
 speech generation/transcription, voice chat, audio output and audit verification.
