@@ -1,4 +1,4 @@
-"""Tests for the emotion reasoning module."""
+"""Tests for the v0 keyword-heuristic emotion classifier."""
 
 from __future__ import annotations
 

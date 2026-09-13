@@ -36,9 +36,10 @@ app = FastAPI(
     title="Jarvis",
     version="0.1.0",
     description=(
-        "Jarvis — a conversational AI assistant powered by Spiral Intelligence. "
-        "Features spiral state evolution, emotion reasoning, adaptive memory, "
-        "and seamless integration with the Spiral Intelligence V8 backend."
+        "Jarvis — conversational FastAPI layer with a v0 keyword emotion "
+        "classifier, a bounded five-variable spiral-state tracker, adaptive "
+        "memory, and an optional Spiral Intelligence V8 client. Heuristic "
+        "state, not trained emotion inference or computational spiral geometry."
     ),
     lifespan=lifespan,
 )

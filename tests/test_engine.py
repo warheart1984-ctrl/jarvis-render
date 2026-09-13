@@ -1,4 +1,4 @@
-"""Tests for the Jarvis engine — conversation loop, spiral evolution, and memory."""
+"""Tests for the Jarvis engine — conversation loop, v0 heuristic state, and memory."""
 
 from __future__ import annotations
 

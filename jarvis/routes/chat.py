@@ -176,7 +176,7 @@ async def supersede_memory(
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, x_jarvis_service_token: str = Header(default="")) -> ChatResponse:
-    """Send a message to Jarvis and receive a spiral-aware response."""
+    """Send a message to Jarvis and receive a reply plus v0 heuristic session state."""
     recall_owner = None
     if settings.recall_owner_user_id:
         if not settings.service_token or not secrets.compare_digest(x_jarvis_service_token, settings.service_token):
@@ -213,7 +213,7 @@ async def resume_session(request: ResumeRequest) -> dict[str, Any]:
 
 @router.get("/state/{session_id}")
 async def get_state(session_id: str) -> dict[str, Any]:
-    """Get the current Jarvis session state including spiral core, emotion, and phase."""
+    """Get session state, including the v0 spiral-state tracker, emotion heuristic, and phase."""
     try:
         return engine.get_state_summary(session_id)
     except ValueError as exc:

@@ -16,7 +16,7 @@ from jarvis.models.spiral_types import (
 
 
 class SpiralPhase(str, Enum):
-    """Current phase of Jarvis's spiral reasoning loop."""
+    """Pipeline phase label for the current turn (keyword/heuristic, not a reasoning engine)."""
 
     LISTEN = "listen"
     ORIENT = "orient"
@@ -107,7 +107,7 @@ class JarvisMemoryEntry(BaseModel):
 
 
 class EmotionState(BaseModel):
-    """Jarvis's inferred emotional context from the conversation."""
+    """v0 keyword-heuristic emotion scores and label for the current turn."""
 
     inferred_emotion: str = "calm"
     empathy_mode: str = "balanced"

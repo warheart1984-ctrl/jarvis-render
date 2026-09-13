@@ -1,8 +1,55 @@
 # Jarvis
 
-A conversational AI assistant powered by [Spiral Intelligence](https://github.com/jhalstead1983-max/NVIDIA).
+A conversational FastAPI layer that talks to hosted LLMs and optionally syncs
+with a [Spiral Intelligence](https://github.com/jhalstead1983-max/NVIDIA) backend.
 
-Jarvis wraps the Spiral Intelligence V8 backend as its cognitive engine, adding a conversational interface with emotion reasoning, adaptive memory, and spiral state evolution that shapes every response.
+Each turn runs a local **v0 / heuristic** state loop: a rule-based emotion
+classifier and a bounded five-variable spiral-state tracker. Both are real,
+tested modules that feed session state, fail-closed gates, and the local
+fallback responder. They are **not** a trained emotion model, LLM judgment, or
+computational spiral geometry.
+
+New memories stay draft; production governed writes remain disabled pending
+EMR gates. The same honesty applies here: these engines are useful application
+heuristics. Ambition may grow later; this release does **not** claim trained
+inference or true spiral math.
+
+## What the local engines actually do
+
+### Emotion classifier (v0 / keyword heuristic)
+
+`infer_emotion` scores the user message against hardcoded keyword lists
+(urgency, excitement, frustration, calm, build-intent). Each hit adds about
+0.25, capped at 0–1. If/elif thresholds pick a label (`calm`, `curious`,
+`driven`, `excited`, `strained`) and an empathy mode.
+
+Optional `BiofeedbackState` fields (heart rate, voice intensity, emotional
+tone) can raise stress when a caller supplies them. That is a real interface,
+not a live sensor pipeline in this service. Defaults are static placeholders
+(`source="manual"`).
+
+The resulting stress and urgency scores gate fail-closed behavior and, on the
+local fallback responder, greeting and empathy phrasing. Hosted LLM replies
+do not receive these scores as model judgment.
+
+### Spiral-state tracker (v0 / bounded five variables)
+
+`evolve_spiral` is a deterministic state machine. Each turn updates five
+clamped scalars — radius, angle, angular_velocity, expansion, coherence —
+with fixed increments gated by confidence, stress, emotion, and intent.
+Intent-mode switching is a small decision tree, plus a forced round-robin
+every five turns.
+
+Angle and radius are tracked metaphors for session motion. They are not
+vector geometry feeding downstream math.
+
+Energy uses a deterministic turn-phase signal
+(`((turn_count % 7) - 3) / 100`) instead of an earlier unbounded/random
+placeholder. Same inputs always produce the same transition.
+
+`determine_phase` picks listen / orient / reason / respond / reflect from
+keywords, turn count, and confidence. It is a pipeline label, not a separate
+reasoning engine.
 
 ## Architecture
 
@@ -10,10 +57,10 @@ Jarvis wraps the Spiral Intelligence V8 backend as its cognitive engine, adding 
 User  ──▶  Jarvis API (FastAPI :8100)
               │
               ├─ Brain Engine
-              │   ├─ Emotion Reasoner   (infers stress, urgency, empathy mode)
-              │   ├─ Spiral Evolution   (evolves intent, energy, coherence each turn)
-              │   ├─ Responder          (generates spiral-aware replies)
-              │   └─ Memory Manager     (conversation history + long-term knowledge)
+              │   ├─ Emotion classifier (v0 keyword heuristic + optional BiofeedbackState)
+              │   ├─ Spiral-state tracker (v0 five-variable bounded state machine)
+              │   ├─ Responder          (rule-based local fallback; hosted LLM when configured)
+              │   └─ Memory Manager     (conversation history + consented draft knowledge)
               │
               └─ Spiral Client SDK ──▶  Spiral Intelligence Backend (:8000)
                                          ├─ V1 Chat
@@ -21,20 +68,24 @@ User  ──▶  Jarvis API (FastAPI :8100)
                                          └─ V8 Orchestrator + FSM
 ```
 
-### Spiral Reasoning Loop
+### Turn pipeline
 
-Every message flows through six phases:
+Every message flows through six phases. The names are orchestration labels;
+the work inside each step is the v0 heuristics above plus ordinary chat,
+memory, and audit code.
 
 1. **LISTEN** — receive the message, resolve the session
-2. **ORIENT** — infer emotion, determine phase, detect intent signals
-3. **REASON** — evolve spiral state (radius, angle, coherence, expansion)
-4. **RESPOND** — generate a contextual reply shaped by intent and emotion
-5. **REFLECT** — extract memories, update preferences
-6. **EVOLVE** — mutate the spiral for the next turn, sync with Spiral backend
+2. **ORIENT** — run the keyword emotion classifier, pick a phase label
+3. **REASON** — advance the five-variable spiral-state tracker
+4. **RESPOND** — generate a reply (hosted LLM when configured, else the local responder)
+5. **REFLECT** — extract memories when consented, update preferences
+6. **EVOLVE** — persist the turn; optional Spiral backend sync stays disabled
+   in production pending EMR gates
 
-### Intent Modes
+### Intent modes
 
-Jarvis inherits the five intent modes from Spiral Intelligence:
+Jarvis stores the five intent modes from Spiral Intelligence. The local
+tracker switches among them with the decision tree described above.
 
 | Mode | Behaviour |
 |------|-----------|
@@ -71,7 +122,7 @@ curl -X POST http://localhost:8100/chat \
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/chat` | Send a message to Jarvis |
-| GET | `/state/{session_id}` | Get session state (spiral, emotion, phase) |
+| GET | `/state/{session_id}` | Get session state (spiral tracker, emotion heuristic, phase) |
 | GET | `/memory/{session_id}` | Get conversation history + long-term memory |
 | DELETE | `/memory/{session_id}` | Clear all memory for a session |
 | GET | `/health` | Jarvis health check |
@@ -94,13 +145,23 @@ Copy `.env.example` to `.env` and configure:
 poetry run pytest -v
 ```
 
+`tests/test_emotion.py` and `tests/test_spiral_evolution.py` cover the v0
+heuristics: keyword labels, optional biofeedback stress, bounded increments,
+intent-mode gates, and the deterministic energy phase signal.
+
 ## Connecting to Spiral Intelligence
 
 Jarvis works in two modes:
 
-1. **Standalone** — When the Spiral backend is unavailable, Jarvis uses its built-in spiral evolution engine. All conversation, emotion, and memory features work independently.
+1. **Standalone** — When the Spiral backend is unavailable, Jarvis uses its
+   built-in v0 emotion classifier and spiral-state tracker. Conversation,
+   heuristic state, and memory features work independently.
 
-2. **Connected** — When the Spiral backend is running, Jarvis syncs state with V1 chat, V7 memory, and V8 session management. This enables the full Spiral Intelligence feature set including autonomous loops, scoring, and the policy engine.
+2. **Connected** — When the Spiral backend is running and governed writes are
+   allowed, Jarvis can sync state with V1 chat, V7 memory, and V8 session
+   management. Production governed writes remain disabled pending EMR gates.
+   A reachable backend is not a claim that autonomous loops, scoring, or the
+   remote policy engine ran inside this turn.
 
 ## Project Infinity / EvolveEngine
 
