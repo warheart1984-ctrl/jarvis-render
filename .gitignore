@@ -10,3 +10,8 @@ venv/
 dist/
 *.egg-info/
 .eggs/
+.pytest-basetemp-*/
+*.sqlite3
+*.sqlite3-*
+.test-tools/
+.test-runs/

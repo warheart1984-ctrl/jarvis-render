@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from jarvis.brain.emotion import infer_emotion
-from jarvis.brain.llm import generate_llm_reply
+from jarvis.brain.llm import ProviderError, generate_llm_reply
 from jarvis.brain.memory import (
     add_long_term_memory,
     add_to_conversation_history,
@@ -97,8 +96,12 @@ class JarvisEngine:
                     try:
                         state = JarvisState.model_validate(recovered["state"])
                     except Exception:
-                        pass
+                        raise ValueError("Recovery checkpoint is invalid; start a new session.") from None
+                    if state.user_id != user_id or state.session_id != new_id:
+                        raise ValueError("Session does not belong to this user.")
                     self._read_only_sessions.add(new_id)
+                elif self.audit.list(new_id) or self.reviver.latest_verified(new_id):
+                    raise ValueError("Session recovery could not be verified; start a new session.")
             self._sessions[new_id] = state
             self._session_locks[new_id] = asyncio.Lock()
             return state
@@ -132,6 +135,8 @@ class JarvisEngine:
         session_lock = await self._get_session_lock(state.session_id)
 
         async with session_lock:
+            # Work on a copy so a failed request cannot advance the live session.
+            state = state.model_copy(deep=True)
             # --- 1. LISTEN ---
             biofeedback = request.biofeedback or state.biofeedback
 
@@ -169,20 +174,35 @@ class JarvisEngine:
             # --- 4. RESPOND ---
             local_reply, reasoning_trace = generate_response(state, request.message)
             llm_result = None
-            if decision != "fail_closed":
+            # Language-only clarification is allowed even when consequential actions
+            # are blocked. No tools, external memory writes or execution are offered.
+            if emotion.stress <= 0.8:
                 try:
                     llm_result = await generate_llm_reply(
                         [
-                            {"role": "system", "content": "You are Jarvis, a concise and careful assistant."},
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are Jarvis, a helpful assistant. Reply naturally and concisely. "
+                                    "You can discuss, explain and help plan. You cannot execute actions or modify "
+                                    "external systems. Never claim to have performed an action or saved a memory. "
+                                    "Do not expose hidden reasoning. "
+                                    + (
+                                        "This turn permits read-only discussion and clarification only. "
+                                        if reasons
+                                        else ""
+                                    )
+                                ),
+                            },
                             *state.conversation_history[-10:],
                             {"role": "user", "content": request.message},
                         ]
                     )
-                except Exception as exc:
-                    logger.warning("LLM provider unavailable; using governed local response: %s", exc)
-                    reasoning_trace.append("provider unavailable; local fallback applied")
+                except ProviderError as exc:
+                    # A missing dependency is not an apparently successful local answer.
+                    raise ProviderError(str(exc)) from None
             reply = llm_result.reply if llm_result else local_reply
-            if decision == "fail_closed":
+            if decision == "fail_closed" and not llm_result:
                 reply = (
                     "I’m pausing consequential action because the available signals are uncertain. "
                     "I can clarify the goal or continue with read-only planning."
@@ -192,11 +212,16 @@ class JarvisEngine:
             # --- 5. REFLECT ---
             state.conversation_history = add_to_conversation_history(state, request.message, reply)
 
-            memory_entry = extract_memory(state, request.message, reply)
+            memory_entry = (
+                extract_memory(state, request.message, reply)
+                if request.memory_consent and decision == "answer"
+                else None
+            )
             if memory_entry:
                 state.long_term_memory = add_long_term_memory(state, memory_entry)
 
-            state.preferences = update_preferences(state, request.message)
+            if request.memory_consent and decision == "answer":
+                state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
             turn_id = uuid4().hex
             turn = SpiralTurn(
@@ -207,14 +232,19 @@ class JarvisEngine:
                 uncertainty=uncertainty,
                 stress=emotion.stress,
                 fail_closed_reason="; ".join(reasons) if reasons else None,
-                evidence=[{"type": "emotion", "rationale": emotion.rationale}],
+                evidence=[
+                    {"type": "emotion", "rationale": emotion.rationale},
+                    {"type": "channel", "input_mode": request.input_mode},
+                    {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
+                ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
             )
             # --- 6. EVOLVE (sync with Spiral backend if available) ---
-            sync_started = time.perf_counter()
-            backend_status = await self._sync_with_spiral(state, request.message, reply)
-            turn.latency_ms = round((llm_result.latency_ms if llm_result else 0.0) + (time.perf_counter() - sync_started) * 1000, 3)
+            backend_status = "skipped_read_only"
+            if decision == "answer" and request.memory_consent:
+                backend_status = await self._sync_with_spiral(state, request.message, reply)
+            turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
             turn.model = llm_result.model if llm_result else "bounded-local"
             turn.cost_usd = llm_result.cost_usd if llm_result else 0.0
@@ -231,6 +261,12 @@ class JarvisEngine:
                         "stress": emotion.stress,
                         "reason": turn.fail_closed_reason,
                         "content_sha256": turn.content_sha256,
+                        "provider": turn.provider,
+                        "model": turn.model,
+                        "latency_ms": turn.latency_ms,
+                        "input_mode": request.input_mode,
+                        "memory_consent": request.memory_consent,
+                        "cost_reported": llm_result.cost_reported if llm_result else True,
                     },
                 },
                 {
@@ -282,6 +318,9 @@ class JarvisEngine:
                 model=turn.model,
                 cost_usd=turn.cost_usd,
                 latency_ms=turn.latency_ms,
+                read_only=decision == "fail_closed",
+                cost_reported=llm_result.cost_reported if llm_result else True,
+                input_mode=request.input_mode,
             )
 
     # ------------------------------------------------------------------
@@ -301,6 +340,9 @@ class JarvisEngine:
             "energy": state.energy,
             "confidence": state.confidence,
             "turn_count": state.turn_count,
+            "read_only": self.is_read_only(session_id),
+            "recovered": session_id in self._read_only_sessions,
+            "memory_count": len(state.long_term_memory),
             "spiral_core": state.spiral_core.model_dump(),
             "emotion": state.emotion.model_dump(),
             "preferences": state.preferences,

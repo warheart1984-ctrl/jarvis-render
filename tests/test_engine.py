@@ -6,11 +6,12 @@ import pytest
 
 from jarvis.brain.engine import JarvisEngine
 from jarvis.models.jarvis_types import ChatRequest
+from jarvis.persistence import JarvisStore
 
 
 @pytest.fixture
-def engine() -> JarvisEngine:
-    return JarvisEngine()
+def engine(tmp_path) -> JarvisEngine:
+    return JarvisEngine(store=JarvisStore(tmp_path / "engine.sqlite3"))
 
 
 @pytest.mark.asyncio
@@ -72,9 +73,13 @@ async def test_emotion_detection(engine: JarvisEngine) -> None:
 
 @pytest.mark.asyncio
 async def test_memory_extraction(engine: JarvisEngine) -> None:
+    state = await engine.get_or_create_session("test-user")
+    state.confidence = 0.8
     request = ChatRequest(
         user_id="test-user",
         message="I always prefer concrete builds over abstract theory. Remember that.",
+        session_id=state.session_id,
+        memory_consent=True,
     )
     response = await engine.chat(request)
 

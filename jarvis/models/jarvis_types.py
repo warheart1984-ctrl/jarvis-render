@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -30,10 +30,12 @@ class ChatRequest(BaseModel):
     """Incoming chat message from the user."""
 
     user_id: str = Field(..., min_length=1)
-    message: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1, max_length=16000)
     session_id: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
     biofeedback: BiofeedbackState | None = None
+    input_mode: Literal["text", "voice"] = "text"
+    memory_consent: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -57,6 +59,9 @@ class ChatResponse(BaseModel):
     model: str = "bounded-local"
     cost_usd: float = 0.0
     latency_ms: float = 0.0
+    cost_reported: bool = False
+    read_only: bool = False
+    input_mode: Literal["text", "voice"] = "text"
 
 
 class SpiralTurn(BaseModel):

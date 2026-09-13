@@ -1,5 +1,67 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jarvis Continuity Console</title><style>
-:root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#2b3957;--text:#edf3ff;--muted:#91a0bd;--accent:#66d9ef;--ok:#70e0a0;--warn:#f4c56e;--danger:#ff8294}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#172541,#0b1020 48%);color:var(--text);font:15px/1.5 system-ui;min-height:100vh}header{height:70px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 28px;background:#0c1426dd}.brand{font-weight:700}.orb{display:inline-block;width:30px;height:30px;vertical-align:middle;margin-right:10px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#8578ff);box-shadow:0 0 25px #66d9ef66}.status{color:var(--ok);font-size:12px}main{max-width:1440px;margin:auto;padding:22px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.65fr);gap:18px}.card{background:#111a2de8;border:1px solid var(--line);border-radius:15px}.chat{min-height:calc(100vh - 114px);display:flex;flex-direction:column}.chat-head,.setup,.composer{padding:16px 20px;border-bottom:1px solid var(--line)}.chat-head{display:flex;justify-content:space-between}.eyebrow{color:var(--accent);font-size:11px;letter-spacing:.14em;text-transform:uppercase}.chat-head h1{margin:4px 0;font-size:22px}.session,.notice{color:var(--muted);font-size:12px}.setup{display:grid;grid-template-columns:1fr 1fr;gap:10px}.setup label{color:var(--muted);font-size:12px}input,textarea,button{font:inherit;color:var(--text);background:#0d1528;border:1px solid var(--line);border-radius:9px;padding:10px 12px}input{display:block;width:100%;margin-top:4px}textarea{flex:1;resize:none;min-height:52px}button{cursor:pointer;background:linear-gradient(135deg,#2d7894,#5352a0);border:0;font-weight:700}button:disabled{opacity:.5}.messages{flex:1;padding:22px;overflow:auto;min-height:400px}.empty{text-align:center;color:var(--muted);padding:80px 15px}.bubble{max-width:78%;padding:12px 15px;border-radius:14px;margin-bottom:14px;white-space:pre-wrap}.user{margin-left:auto;background:#285477;border-bottom-right-radius:3px}.jarvis{background:#18223a;border-bottom-left-radius:3px}.bubble-meta{color:var(--muted);font-size:11px;margin-top:6px}.composer{display:flex;gap:8px;border-top:1px solid var(--line);border-bottom:0}.composer button{padding:0 13px}.sidebar{display:flex;flex-direction:column;gap:13px}.panel{padding:16px}.panel h2{font-size:14px;margin:0 0 9px}.panel pre{margin:0;max-height:190px;overflow:auto;color:#c8d5ee;font:12px ui-monospace,monospace;white-space:pre-wrap}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:10px}.metric{background:#0d1528;border:1px solid var(--line);border-radius:9px;padding:8px}.metric b{display:block;font-size:18px}.metric span{color:var(--muted);font-size:11px}.badge{padding:3px 7px;border-radius:99px;font-size:11px}.ok{background:#163b35;color:var(--ok)}.warn{background:#44371d;color:var(--warn)}.error{color:var(--danger);font-size:13px}@media(max-width:900px){main{grid-template-columns:1fr;padding:12px}.sidebar{display:grid;grid-template-columns:1fr 1fr}}@media(max-width:560px){.setup{grid-template-columns:1fr}.sidebar{display:flex}.bubble{max-width:90%}}
-</style></head><body><header><div class="brand"><span class="orb"></span>JARVIS <span class="notice">/ continuity console</span></div><div class="status">● service online</div></header><main><section class="card chat"><div class="chat-head"><div><div class="eyebrow">Governed conversation</div><h1>Talk to Jarvis</h1></div><div id="session-label" class="session">New session</div></div><div class="setup"><label>User ID<input id="user-id" value="web-user"></label><label>Service token<input id="token" type="password" placeholder="Required by production"></label></div><div id="messages" class="messages"><div id="empty" class="empty">✦<br>Start a conversation with Jarvis.<br><span class="notice">Governance state appears beside every response.</span></div></div><form id="composer" class="composer"><button id="mic" type="button" title="Microphone">🎙</button><textarea id="message" required placeholder="Message Jarvis…"></textarea><button id="send" type="submit">Send</button><button id="speaker" type="button" title="Spoken replies">🔊</button></form><div id="voice-status" class="notice" style="padding:0 20px 14px">Text mode · microphone and spoken replies are optional.</div></section><aside class="sidebar"><section class="card panel"><h2>Decision state</h2><div id="decision" class="notice">No turn yet.</div><div class="metrics"><div class="metric"><b id="confidence">—</b><span>confidence</span></div><div class="metric"><b id="uncertainty">—</b><span>uncertainty</span></div><div class="metric"><b id="phase">—</b><span>phase</span></div></div></section><section class="card panel"><h2>Recovery / read-only state</h2><pre id="state">No session loaded.</pre></section><section class="card panel"><h2>Audit trace</h2><pre id="audit">No audit events loaded.</pre></section><section class="card panel"><h2>Decision trace</h2><pre id="trace">No decision trace loaded.</pre></section><section class="card panel"><h2>Memory governance</h2><div id="memory" class="notice">Consent, conflicts, and supersession remain API-governed.</div></section><div id="error" class="error"></div></aside></main><script>
-const $=id=>document.getElementById(id);let sessionId=localStorage.getItem('jarvis.session')||'',speakReplies=false,recognition=null;const token=()=>$('token').value.trim();const headers=()=>({'Content-Type':'application/json','X-Jarvis-Service-Token':token()});function setSession(id){sessionId=id;localStorage.setItem('jarvis.session',id);$('session-label').textContent=id?`Session ${id.slice(0,12)}…`:'New session'}function addBubble(kind,text,meta=''){ $('empty')?.remove();const el=document.createElement('div');el.className=`bubble ${kind}`;el.textContent=text;if(meta){const m=document.createElement('div');m.className='bubble-meta';m.textContent=meta;el.append(m)}$('messages').append(el);$('messages').scrollTop=$('messages').scrollHeight}async function api(path,options={}){const r=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.detail?.message||d.detail||`Request failed (${r.status})`);return d}function showResponse(d){const reason=d.fail_closed_reason?` · ${d.fail_closed_reason}`:'';addBubble('jarvis',d.reply,`${d.decision}${reason} · ${d.provider||'local'}/${d.model||'bounded-local'} · ${d.latency_ms||'—'}ms`);$('decision').innerHTML=`<span class="badge ${d.decision==='answer'?'ok':'warn'}">${d.decision}</span> <span class="notice">${d.fail_closed_reason||'Response accepted under current policy.'}</span>`;$('confidence').textContent=Number(d.confidence).toFixed(2);$('uncertainty').textContent=Number(d.uncertainty).toFixed(2);$('phase').textContent=d.phase;if(speakReplies&&'speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(d.reply))}}async function refresh(){if(!sessionId)return;try{const [s,a,t]=await Promise.all([api(`/state/${sessionId}`),api(`/sessions/${sessionId}/audit`),api(`/sessions/${sessionId}/trace`)]);$('state').textContent=JSON.stringify(s,null,2);$('audit').textContent=JSON.stringify(a,null,2);$('trace').textContent=JSON.stringify(t,null,2);$('memory').textContent=`${s.memory_count??s.long_term_memory?.length??0} durable memory entries. Writes remain consent-gated.`}catch(e){$('error').textContent=e.message}}$('mic').onclick=()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){$('voice-status').textContent='Speech recognition is not supported in this browser.';return}if(recognition){recognition.stop();return}recognition=new SR();recognition.lang='en-US';recognition.onstart=()=>{$('voice-status').textContent='🔴 Listening…';$('mic').textContent='⏹'};recognition.onresult=e=>{$('message').value=e.results[0][0].transcript;$('voice-status').textContent='Voice captured · press Send to submit'};recognition.onerror=e=>{$('voice-status').textContent=`Microphone error: ${e.error}`};recognition.onend=()=>{recognition=null;$('mic').textContent='🎙'};recognition.start()};$('speaker').onclick=()=>{speakReplies=!speakReplies;$('speaker').textContent=speakReplies?'🔈':'🔊';$('voice-status').textContent=speakReplies?'Spoken replies enabled.':'Spoken replies muted.';if(!speakReplies&&'speechSynthesis'in window)speechSynthesis.cancel()};$('composer').onsubmit=async e=>{e.preventDefault();const message=$('message').value.trim();if(!message)return;$('send').disabled=true;$('error').textContent='';addBubble('user',message);$('message').value='';try{const d=await api('/chat',{method:'POST',body:JSON.stringify({user_id:$('user-id').value.trim()||'web-user',message,session_id:sessionId||null})});setSession(d.session_id);showResponse(d);await refresh()}catch(err){$('error').textContent=err.message;addBubble('jarvis','I could not complete that request. Check authentication and service health.','request failed')}finally{$('send').disabled=false;$('message').focus()}};$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit()}};setSession(sessionId);if(sessionId)refresh();
-</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jarvis — chat & voice</title>
+  <link rel="stylesheet" href="/ui/style.css">
+  <script type="module" src="/ui/chat.js"></script>
+</head>
+<body>
+  <header><a class="brand" href="/ui/"><span class="orb" aria-hidden="true"></span>JARVIS</a>
+    <span id="connection" role="status">Connecting to service…</span></header>
+  <main>
+    <section class="chat card" aria-label="Chat">
+      <div class="chat-heading"><div><span class="eyebrow">Your conversation, with continuity</span>
+        <h1>Talk to Jarvis.</h1></div><button id="new-chat" type="button" class="secondary">New chat</button></div>
+      <form id="connect-form" class="connect">
+        <label>User ID<input id="user-id" value="web-user" maxlength="200" autocomplete="username" required></label>
+        <label>Service token<input id="token" type="password" placeholder="Your Jarvis service token" autocomplete="off" required></label>
+        <button id="connect" type="submit">Connect</button>
+        <p class="hint">Use the Jarvis service token here. Your NVIDIA key stays on the server. This page does not save tokens.</p>
+      </form>
+      <div class="toolbar">
+        <label>Mode <select id="mode"><option value="text">Text</option><option value="voice">Voice</option></select></label>
+        <label><input id="spoken" type="checkbox"> Speak replies</label>
+        <button id="stop-audio" type="button" class="secondary" disabled>Stop audio</button>
+      </div>
+      <div id="recovery" class="banner" hidden></div>
+      <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions">
+        <div id="empty" class="empty"><span class="spark" aria-hidden="true">✦</span><h2>A space to think out loud.</h2>
+          <p>Ask a question, explore an idea, or switch to voice.<br>Jarvis can discuss and plan; actions remain governed.</p></div>
+      </div>
+      <div id="error" class="error" role="alert" hidden></div>
+      <form id="composer">
+        <label class="sr-only" for="message">Message Jarvis</label>
+        <textarea id="message" placeholder="Message Jarvis…" rows="2" maxlength="16000" required disabled></textarea>
+        <div class="compose-actions">
+          <button id="mic" type="button" class="secondary" hidden disabled>Start recording</button>
+          <span id="activity" role="status">Connect to start.</span>
+          <button id="send" type="submit" disabled>Send →</button>
+        </div>
+      </form>
+      <p id="voice-note" class="hint voice-note" hidden>Press record, speak, then stop. NVIDIA transcribes the audio, Jarvis processes the message, and NVIDIA speaks the reply. Recordings are limited to 30 seconds and are not saved; transcripts enter chat history.</p>
+    </section>
+    <aside aria-label="Governance" class="sidebar">
+      <section class="card panel"><span class="eyebrow">Alongside the conversation</span><h2>Governance</h2>
+        <p id="decision">No response yet.</p><div class="metrics"><div><strong id="confidence">—</strong><small>confidence</small></div>
+          <div><strong id="uncertainty">—</strong><small>uncertainty</small></div></div>
+        <p class="hint">These are Jarvis policy signals, not a guarantee of factual accuracy.</p>
+        <dl><dt>Provider / model</dt><dd id="provider">Not checked</dd><dt>Response latency</dt><dd id="latency">—</dd>
+          <dt>Usage cost</dt><dd id="cost">Not reported</dd><dt>Session</dt><dd id="session-label">New conversation</dd></dl>
+      </section>
+      <section class="card panel"><h2>Memory & recovery</h2>
+        <label class="consent"><input id="consent" type="checkbox"> Allow memory extraction when policy permits</label>
+        <p class="hint">Conversation history is saved on the server. Extracted memories and external writes are blocked on read-only turns.</p>
+        <p id="memory-state">No session loaded.</p><p id="audit-state">Audit not checked.</p>
+        <button id="refresh" type="button" class="secondary" disabled>Refresh governance</button>
+      </section>
+      <section class="card panel traces"><details><summary>Decision traces</summary><pre id="trace">No traces yet.</pre></details>
+        <details><summary>Audit events</summary><pre id="audit">No events yet.</pre></details>
+        <details><summary>Session state</summary><pre id="state">No session yet.</pre></details>
+      </section>
+      <p class="hint">Voice uses NVIDIA transcription and speech synthesis, one turn at a time. Full-duplex Nemotron VoiceChat is not connected.</p>
+    </aside>
+  </main>
+</body>
+</html>

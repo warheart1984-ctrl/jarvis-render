@@ -46,6 +46,10 @@ Jarvis inherits the five intent modes from Spiral Intelligence:
 
 ## Quick Start
 
+For the deployed text and voice console, open `/ui/`. See
+[Chat and voice setup](docs/CHAT_VOICE.md) for NVIDIA configuration, API contracts,
+microphone controls, recovery behavior, and the deployed smoke test.
+
 ```bash
 # Install dependencies
 poetry install
@@ -75,8 +79,11 @@ curl -X POST http://localhost:8100/chat \
 Copy `.env.example` to `.env` and configure:
 
 - `JARVIS_SPIRAL_API_BASE` — URL of the Spiral Intelligence backend
-- `JARVIS_LLM_PROVIDER` — `mock` (rule-based) or future LLM integration
+- `JARVIS_LLM_PROVIDER` — `nvidia` for hosted chat, or `mock` for the local responder
 - `JARVIS_LLM_API_KEY` — API key for the LLM provider
+- `NVIDIA_API_KEY` — NVIDIA hosted API key (server-side only)
+- `JARVIS_LLM_MODEL` — defaults to `nvidia/nemotron-3.5-lightning-30b-a3b`
+- `JARVIS_SERVICE_TOKEN` — operator token required by protected API routes
 
 ## Tests
 

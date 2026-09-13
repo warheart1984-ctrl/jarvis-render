@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import secrets
+import sqlite3
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from jarvis.brain.llm import provider_config
 from jarvis.core.config import settings
 from jarvis.persistence import AuditLedger
 from jarvis.routes.chat import engine
 from jarvis.routes.chat import router as chat_router
 from jarvis.routes.health import router as health_router
+from jarvis.routes.voice import router as voice_router
 
 
 @asynccontextmanager
@@ -47,12 +51,17 @@ _RATE_LIMIT = 60
 @app.middleware("http")
 async def service_boundary(request: Request, call_next):
     """Protect state-changing and diagnostic routes when deployed with a token."""
-    protected = request.url.path == "/chat" or request.url.path.startswith(("/sessions/", "/memory/"))
+    protected = request.url.path in {"/chat", "/capabilities"} or request.url.path.startswith(
+        ("/sessions/", "/memory/", "/state/", "/voice/")
+    )
     request_id = request.headers.get("X-Request-ID") or uuid4().hex
     request.state.request_id = request_id
     if protected:
-        length = request.headers.get("content-length")
-        if length and int(length) > _MAX_BODY:
+        try:
+            length = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
+        if length > _MAX_BODY or length < 0:
             return JSONResponse(
                 status_code=413,
                 content={"detail": "Request body too large", "request_id": request_id},
@@ -81,8 +90,25 @@ async def service_boundary(request: Request, call_next):
                 content={"detail": "Unauthorized service request", "request_id": request_id},
                 headers={"X-Request-ID": request_id},
             )
+    if protected and request.method in {"POST", "PUT", "PATCH"}:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > _MAX_BODY:
+                return JSONResponse(status_code=413, content={"detail": "Request body too large"})
+        request._body = bytes(body)
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if protected:
+        response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/ui"):
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "connect-src 'self'; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'"
+        )
     return response
 
 
@@ -100,30 +126,50 @@ app.add_middleware(
 
 app.include_router(chat_router)
 app.include_router(health_router)
-app.mount("/ui", StaticFiles(directory="jarvis/ui", html=True), name="ui")
+app.include_router(voice_router)
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "ui", html=True), name="ui")
 
 
 @app.get("/")
-async def root() -> dict[str, object]:
-    """Human-friendly entrypoint for local wrapper demos."""
+async def root() -> RedirectResponse:
+    return RedirectResponse("/ui/", status_code=307)
+
+
+@app.get("/capabilities")
+async def capabilities() -> dict[str, object]:
+    provider, key = provider_config()
     return {
-        "service": "jarvis",
-        "status": "ok",
-        "message": "Jarvis wrapper is running.",
-        "endpoints": {
-            "health": "/health",
-            "spiral_health": "/health/spiral",
-            "chat": "/chat",
-            "docs": "/docs",
-        },
+        "provider": provider,
+        "model": settings.llm_model,
+        "chat_configured": bool(key),
+        "speech_configured": bool(settings.nvidia_api_key),
+        "speech_provider": "nvidia",
+        "voice_transport": "turn_based",
+        "full_duplex": False,
+        "build": "jarvis-chat-voice-v2",
     }
 
 
 @app.get("/health/ready")
-async def readiness() -> dict[str, object]:
-    spiral = await engine.spiral.health()
-    return {
-        "status": "ready" if spiral.get("status") == "ok" else "degraded",
-        "service": "jarvis",
-        "dependencies": {"spiral_backend": spiral},
-    }
+async def readiness() -> JSONResponse:
+    # Render probes local runtime/storage, without inference calls or external quotas.
+    try:
+        with sqlite3.connect(engine.store.path, timeout=2) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("SELECT 1 FROM spiral_turns LIMIT 1")
+            db.rollback()
+    except sqlite3.Error:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "storage": "unavailable"})
+    provider, key = provider_config()
+    configured = bool(key) or provider in {"", "mock", "local"}
+    return JSONResponse(
+        status_code=200 if configured else 503,
+        content={
+            "status": "ready" if configured else "not_ready",
+            "storage": "ok",
+            "provider": provider,
+            "provider_configured": bool(key),
+            "provider_connectivity": "checked_on_request",
+            "build": "jarvis-chat-voice-v2",
+        },
+    )

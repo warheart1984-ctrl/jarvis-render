@@ -9,6 +9,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from jarvis.brain.engine import JarvisEngine
+from jarvis.brain.llm import ProviderError
 from jarvis.core.config import settings
 from jarvis.models.jarvis_types import ChatRequest, ChatResponse
 
@@ -173,10 +174,29 @@ async def chat(request: ChatRequest) -> ChatResponse:
     """Send a message to Jarvis and receive a spiral-aware response."""
     try:
         return await engine.chat(request)
+    except ProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception:
+        raise HTTPException(status_code=500, detail="Chat could not be completed. No response was confirmed.") from None
+
+
+class ResumeRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=200)
+    user_id: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/sessions/resume")
+async def resume_session(request: ResumeRequest) -> dict[str, Any]:
+    try:
+        await engine.get_or_create_session(request.user_id, request.session_id)
+        return {
+            "state": engine.get_state_summary(request.session_id),
+            "memory": engine.get_memory_summary(request.session_id),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get("/state/{session_id}")

@@ -1,12 +1,19 @@
 services:
   - type: web
     name: jarvis
-    env: docker
+    branch: main
+    runtime: docker
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health/ready
     envVars:
       - key: JARVIS_ENVIRONMENT
         value: production
+      - key: JARVIS_LLM_PROVIDER
+        value: nvidia
+      - key: JARVIS_LLM_MODEL
+        value: nvidia/nemotron-3.5-lightning-30b-a3b
+      - key: NVIDIA_API_KEY
+        sync: false
       - key: JARVIS_MEMORY_DB_PATH
         value: /data/jarvis.sqlite3
       - key: JARVIS_CORS_ORIGINS

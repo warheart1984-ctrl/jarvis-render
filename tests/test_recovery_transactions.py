@@ -38,8 +38,9 @@ async def test_restart_refuses_tampered_checkpoint(tmp_path: Path) -> None:
         )
 
     restarted = JarvisEngine(store=JarvisStore(path))
-    await restarted.get_or_create_session("u1", response.session_id)
-    assert not restarted.is_read_only(response.session_id)
+    with pytest.raises(ValueError, match="could not be verified"):
+        await restarted.get_or_create_session("u1", response.session_id)
+    assert restarted.get_session(response.session_id) is None
 
 
 def test_turn_bundle_rolls_back_on_duplicate_turn(tmp_path: Path) -> None:

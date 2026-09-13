@@ -29,9 +29,17 @@ class JarvisSettings(BaseSettings):
     llm_api_key: str = ""
     nvidia_api_key: str = Field(default="", validation_alias="NVIDIA_API_KEY")
     llm_base_url: str = "https://integrate.api.nvidia.com/v1"
-    llm_model: str = "nvidia/llama-3.3-nemotron-super-49b-v1"
+    llm_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     llm_temperature: float = 0.7
     llm_timeout_seconds: float = 45.0
+    llm_max_tokens: int = Field(default=768, ge=64, le=4096)
+    speech_asr_url: str = (
+        "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com/v1/audio/transcriptions"
+    )
+    speech_tts_url: str = (
+        "https://877104f7-e885-42b9-8de8-f6e4c6303969.invocation.api.nvcf.nvidia.com/v1/audio/synthesize"
+    )
+    speech_voice: str = "Magpie-Multilingual.EN-US.Aria"
 
     # Server
     host: str = "0.0.0.0"
