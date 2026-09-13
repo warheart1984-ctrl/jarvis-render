@@ -61,7 +61,12 @@ class ReviverLedger:
         if checkpoint is None:
             return None
         event = next(
-            (item for item in reversed(audit.list(session_id)) if item["turn_id"] == checkpoint["turn_id"]), None
+            (
+                item
+                for item in reversed(audit.list(session_id))
+                if item["turn_id"] == checkpoint["turn_id"] and item["event_type"] == "spiral_turn"
+            ),
+            None,
         )
         if event is None or event["event_hash"] != checkpoint["audit_hash"]:
             return None

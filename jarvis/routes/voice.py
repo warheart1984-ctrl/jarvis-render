@@ -1,6 +1,7 @@
 """Authenticated audio endpoints; only persisted, audited Jarvis replies can be spoken."""
 
 import json
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -29,7 +30,7 @@ class SpeakRequest(BaseModel):
 
 
 @router.post("/speak")
-async def speak(request: SpeakRequest) -> Response:
+async def speak(request: SpeakRequest, http_request: Request) -> Response:
     turn = next((t for t in engine.get_trace(request.session_id) if t["turn_id"] == request.turn_id), None)
     if not turn:
         raise HTTPException(status_code=404, detail="Reply not found in this session.")
@@ -48,12 +49,27 @@ async def speak(request: SpeakRequest) -> Response:
         or json.loads(event["payload_json"]).get("content_sha256") != turn["content_sha256"]
     ):
         raise HTTPException(status_code=409, detail="Reply audit could not be verified.")
-    if len(turn["content"]) > 6000:
+    if len(turn["content"]) > speech.MAX_SPEECH_TEXT:
         raise HTTPException(status_code=400, detail="Reply is too long for speech. Please request a shorter answer.")
     if json.loads(event["payload_json"]).get("safe_mode"):
         raise HTTPException(status_code=409, detail="Safe-mode replies are text-only.")
+
+    def audit_attempt(entry: dict) -> None:
+        engine.audit.append(
+            uuid4().hex,
+            request.session_id,
+            "speech_attempt",
+            {
+                **entry,
+                "transaction_id": request.turn_id,
+                "correlation_id": json.loads(event["payload_json"]).get("correlation_id", request.turn_id),
+                "speech_request_id": http_request.state.request_id,
+            },
+            turn_id=request.turn_id,
+        )
+
     try:
-        audio = await speech.synthesize(turn["content"])
+        audio = await speech.synthesize(turn["content"], audit_attempt=audit_attempt)
     except ProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     return Response(audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})

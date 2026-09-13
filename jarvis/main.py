@@ -156,7 +156,7 @@ async def capabilities() -> dict[str, object]:
         "speech_provider": "nvidia",
         "voice_transport": "turn_based",
         "full_duplex": False,
-        "build": "jarvis-chat-voice-v3",
+        "build": "jarvis-chat-voice-v4",
     }
 
 
@@ -182,6 +182,6 @@ async def readiness() -> JSONResponse:
             "safe_mode_available": True,
             "degraded": not configured,
             "provider_connectivity": "checked_on_request",
-            "build": "jarvis-chat-voice-v3",
+            "build": "jarvis-chat-voice-v4",
         },
     )

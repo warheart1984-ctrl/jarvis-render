@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from jarvis.brain.context import build_chat_context
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
 from jarvis.brain.memory import (
@@ -180,29 +181,20 @@ class JarvisEngine:
                 self.audit.append(uuid4().hex, state.session_id, "inference_attempt", entry, turn_id=turn_id)
 
             llm_result = None
+            messages, runtime_context = build_chat_context(
+                state,
+                request,
+                read_only=bool(reasons),
+                infinity_configured=self.infinity is not None,
+                continuity_configured=self.continuity is not None,
+                speech_configured=bool(settings.nvidia_api_key),
+            )
             # Language-only clarification is allowed even when consequential actions
             # are blocked. No tools, external memory writes or execution are offered.
             if emotion.stress <= 0.8:
                 try:
                     llm_result = await generate_llm_reply(
-                        [
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are Jarvis, a helpful assistant. Reply naturally and concisely. "
-                                    "You can discuss, explain and help plan. You cannot execute actions or modify "
-                                    "external systems. Never claim to have performed an action or saved a memory. "
-                                    "Do not expose hidden reasoning. "
-                                    + (
-                                        "This turn permits read-only discussion and clarification only. "
-                                        if reasons
-                                        else ""
-                                    )
-                                ),
-                            },
-                            *state.conversation_history[-10:],
-                            {"role": "user", "content": request.message},
-                        ],
+                        messages,
                         transaction_id=turn_id,
                         correlation_id=correlation_id,
                         audit_attempt=audit_attempt,
@@ -248,6 +240,7 @@ class JarvisEngine:
                     {"type": "channel", "input_mode": request.input_mode},
                     {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
                     {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
+                    {"type": "runtime_context", **runtime_context},
                 ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
@@ -285,6 +278,7 @@ class JarvisEngine:
                         "inference_status": llm_result.inference_status if llm_result else "not_requested",
                         "transaction_id": turn_id,
                         "correlation_id": correlation_id,
+                        "runtime_context": runtime_context,
                     },
                 },
                 {

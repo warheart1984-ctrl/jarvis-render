@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -283,6 +284,10 @@ async def _request_model(messages: list[dict[str, str]], slot: ProviderSlot, api
         raise ProviderError("Chat provider returned no assistant content.", status="unknown") from None
     if not isinstance(content, str) or not content.strip():
         raise ProviderError("Chat provider returned no assistant content.", status="unknown")
+    if re.search(r"<\s*/?\s*(?:think|analysis|reasoning)\s*>", content, re.IGNORECASE):
+        raise ProviderError("Chat provider returned reasoning markup instead of a clean answer.", status="unknown")
+    if choice.get("finish_reason") == "length":
+        raise ProviderError("Chat provider returned a truncated answer.", status="unknown")
     usage = body.get("usage") or {}
     cost = usage.get("cost") if isinstance(usage, dict) else None
     reported = isinstance(cost, (int, float)) and math.isfinite(cost) and cost >= 0

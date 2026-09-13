@@ -21,6 +21,37 @@ def models(monkeypatch):
     monkeypatch.setattr(settings, "llm_fallback_models", "backup,last,unused")
 
 
+@pytest.mark.parametrize(
+    "content,finish",
+    [
+        ("As a helpful assistant</think>Hello", "stop"),
+        ("<think>internal text</think>Hi", "stop"),
+        ("Half an answer", "length"),
+    ],
+    ids=["orphan-think", "reasoning-block", "truncated-answer"],
+)
+async def test_malformed_answers_fall_back_without_exposing_content(monkeypatch, models, content, finish):
+    def handler(req):
+        primary = json.loads(req.content)["model"] == "primary"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": content if primary else "A clean answer."},
+                        "finish_reason": finish if primary else "stop",
+                    }
+                ]
+            },
+        )
+
+    mock_provider(monkeypatch, handler)
+    result = await llm.generate_llm_reply([{"role": "user", "content": "Hello"}])
+    assert result.reply == "A clean answer." and result.model == "backup"
+    assert result.attempts[0]["status"] == "unknown"
+    assert content not in json.dumps(result.attempts)
+
+
 @pytest.mark.parametrize("status", [410, 429, 503, 200])
 async def test_fallback_records_real_model_and_failures(monkeypatch, models, status):
     def handler(req):

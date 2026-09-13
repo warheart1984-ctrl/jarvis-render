@@ -117,6 +117,40 @@ not configured, but returns 503 if local storage is unavailable.
 
 ## Verification
 
+### Runtime context and long speech
+
+Each model receives server-generated facts about Jarvis (not model self-training),
+ten recent messages, and up to eight saved memories from the same user and session.
+Saved memory text is bounded to 400 characters per entry and passed as untrusted
+user data, never system instructions. No cross-session lookup is performed.
+The trace records the context version, memory counts, consent and policy flags,
+but does not duplicate the actual saved memory text in those audit metadata fields.
+The prompt distinguishes configuration from connectivity and states that the
+optional Infinity hook currently runs after the reply; it does not revise that
+reply or retrain the model. It does not claim new integration capabilities.
+
+Responses containing reasoning delimiters or a provider-reported token-limit
+truncation are classified as unknown and sent through bounded model fallback.
+The rejected output is not presented, spoken or copied into attempt metadata.
+
+The NVIDIA speech error reproduced on 2026-09-13 was an upstream 4 MiB response
+limit: a 721-character answer produced a reported 4,792,808-byte response.
+Input character limits alone therefore do not ensure successful synthesis.
+Jarvis now divides speech into sentence/word-boundary chunks of at most 240
+characters (hard-splitting unusually long tokens). It caps each operation at
+40 chunks, 50 seconds and 20 MB of assembled audio, with no automatic retries.
+Every chunk is audited before and after its request, with the original turn's
+transaction/correlation IDs plus the speech request ID. Only validated mono
+44.1 kHz 16-bit PCM is assembled into one WAV after all chunks succeed.
+Failures never return partial speech; the complete text remains available.
+Additional speech events do not replace the checkpoint's audited turn anchor.
+
+NVIDIA documents both the normalized-text limit and the response-size limitation:
+[HTTP API](https://docs.nvidia.com/nim/speech/26.07.0/reference/api-references/tts/http-tts.html),
+[TTS troubleshooting](https://docs.nvidia.com/nim/speech/26.05.0/troubleshooting/tts.html).
+
+### Test commands
+
 Run pytest with the declared dev dependencies and a writable, fresh --basetemp.
 On Windows the sandbox ACL can prevent pytest cleanup; run in the normal
 user environment using the same isolated test runtime.
