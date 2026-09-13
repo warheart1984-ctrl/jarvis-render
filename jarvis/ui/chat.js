@@ -1,10 +1,20 @@
 import { createRecorder, disposePlayback } from "./audio.js";
 import { recallStatus } from "./recall.js";
+import { receiptView, renderInspection } from "./memory.js";
 
 const $ = id => document.getElementById(id);
 let session = "", connected = false, busy = false, recovered = false;
 let recording = null, timer = null, recordingStart = false, caps = {};
 let playback = null, audioUrl = null, speechAbort = null, speechGeneration = 0;
+let governanceGeneration = 0;
+function clearInspection() {
+  renderInspection($("memory-inspection"), null);
+  $("audit-state").textContent = "Audit verification is not current. Refresh after reconnecting.";
+  $("recall-state").textContent = "Recall source verification is not current.";
+  for (const node of $("messages").querySelectorAll(".context-receipt")) {
+    node.replaceWith(receiptView({status: "unavailable"}, node.dataset.turnId));
+  }
+}
 const storage = {
   read() { try { return JSON.parse(localStorage.getItem("jarvis.active") || "null"); } catch { return null; } },
   save() { try { localStorage.setItem("jarvis.active", JSON.stringify({ session, user: $("user-id").value })); } catch {} },
@@ -45,6 +55,7 @@ async function request(path, options = {}, audio = false) {
     if (!response.ok) {
       let detail; try { detail = (await response.json()).detail; } catch {}
       if (response.status === 401) {
+        governanceGeneration++; clearInspection();
         connected = false; controls();
         throw Error("Service token not accepted. Enter your Jarvis token and reconnect.");
       }
@@ -92,7 +103,7 @@ async function speak(turn) {
     textMode("Speech playback: " + e.message);
   }
 }
-function message(role, text, response = null) {
+function message(role, text, response = null, turnId = "") {
   $("empty")?.remove();
   const article = document.createElement("article"); article.className = "message " + role;
   const label = document.createElement("div"); label.className = "message-label"; label.textContent = role === "user" ? "You" : "Jarvis";
@@ -108,6 +119,7 @@ function message(role, text, response = null) {
     replay.textContent = "Play reply"; replay.disabled = !caps.speech_configured || response.safe_mode;
     replay.onclick = () => speak(response.turn_id); article.append(replay);
   }
+  if (role !== "user") article.append(receiptView(response?.context_receipt, response?.turn_id || turnId));
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }
 function decision(d) {
@@ -124,11 +136,22 @@ function decision(d) {
 function setSession(id) { session = id; $("session-label").textContent = id || "New conversation"; storage.save(); }
 async function governance() {
   if (!session) return;
+  const generation = ++governanceGeneration;
   const id = encodeURIComponent(session);
-  const [s, a, t, v] = await Promise.all([
+  let results;
+  try { results = await Promise.all([
     request("/state/" + id), request("/sessions/" + id + "/audit"),
-    request("/sessions/" + id + "/trace"), request("/sessions/" + id + "/audit/verify")
-  ]);
+    request("/sessions/" + id + "/trace"), request("/sessions/" + id + "/audit/verify"),
+    request("/sessions/" + id + "/memory-inspection?user_id=" + encodeURIComponent($("user-id").value.trim()))
+  ]); } catch (e) { if (generation === governanceGeneration) clearInspection(); throw e; }
+  if (generation !== governanceGeneration || id !== encodeURIComponent(session)) return;
+  const [s, a, t, v, inspection] = results;
+  renderInspection($("memory-inspection"), inspection);
+  const receipts = new Map(inspection.turns.map(t => [t.turn_id, t.context_receipt]));
+  for (const node of $("messages").querySelectorAll(".context-receipt")) {
+    node.replaceWith(receiptView(inspection.status === "available"
+      ? receipts.get(node.dataset.turnId) : {status: "unavailable"}, node.dataset.turnId));
+  }
   $("state").textContent = JSON.stringify(s, null, 2); $("trace").textContent = JSON.stringify(t, null, 2);
   $("audit").textContent = JSON.stringify(a, null, 2);
   const lastTurn = [...a.events].reverse().find(e => e.event_type === "spiral_turn");
@@ -137,10 +160,11 @@ async function governance() {
     catch { $("recall-state").textContent = "Recall metadata could not be read."; }
   }
   $("memory-state").textContent = s.memory_count + " extracted memories. External storage is not confirmed by this count.";
-  $("audit-state").textContent = v.valid ? "Audit chain verified." : "Audit verification failed.";
-  recovered = s.read_only || !v.valid;
+  const verified = v.valid && inspection.status !== "unverified";
+  $("audit-state").textContent = verified ? "Audit chain verified." : "Audit or turn verification failed.";
+  recovered = s.read_only || !verified;
   $("recovery").hidden = !recovered;
-  $("recovery").textContent = !v.valid ? "Audit verification failed. Start a new chat; this session remains blocked."
+  $("recovery").textContent = !verified ? "Audit or turn verification failed. Start a new chat; this session remains blocked."
     : "Recovered session: history is available, but new turns are locked. Start a new chat to continue.";
   controls();
 }
@@ -149,6 +173,9 @@ $("connect-form").onsubmit = async e => {
   busy = true; controls(); error(); activity("Connecting…");
   try {
     caps = await request("/capabilities");
+    $("write-policy").textContent = caps.governed_writes_enabled
+      ? "Development governed writes enabled by operator. New local memories still start as drafts."
+      : "Governed writes disabled · new local memories stay draft. Production EMR gates are not enabled.";
     if (caps.recall_configured) $("user-id").value = caps.recall_owner_user_id;
     $("recall-state").textContent = caps.recall_configured
       ? "Operator-scoped recall ready. Only verified prior history will be used."
@@ -161,7 +188,7 @@ $("connect-form").onsubmit = async e => {
     if (!session && saved?.session && saved.user === $("user-id").value) {
       const data = await post("/sessions/resume", { session_id: saved.session, user_id: saved.user });
       setSession(saved.session); $("messages").replaceChildren();
-      for (const m of data.memory.conversation_history) message(m.role === "user" ? "user" : "jarvis", m.content);
+      for (const m of data.memory.conversation_history) message(m.role === "user" ? "user" : "jarvis", m.content, null, m.turn_id);
     }
     if (session) await governance();
     activity(recovered ? "Start a new chat to continue." : "Ready.");
@@ -169,6 +196,7 @@ $("connect-form").onsubmit = async e => {
   finally { busy = false; controls(); }
 };
 $("new-chat").onclick = () => {
+  governanceGeneration++; clearInspection();
   stopAudio(); session = ""; recovered = false; storage.clear();
   $("messages").replaceChildren(); $("session-label").textContent = "New conversation";
   $("recovery").hidden = true; error(); $("message").value = ""; $("consent").checked = false;

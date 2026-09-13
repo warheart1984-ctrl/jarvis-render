@@ -142,6 +142,10 @@ class RecallLedger:
             # No content or alternate session on a damaged/missing dependency.
             return RecallResult({"status": "unavailable"})
 
+    def is_revoked(self, session_id: str) -> bool:
+        with sqlite3.connect(self.path) as db:
+            return db.execute("SELECT 1 FROM recall_revoked WHERE session_id=?", (session_id,)).fetchone() is not None
+
 
 def main() -> None:
     """Explicit local migration; session IDs are required and no secrets are printed."""

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from jarvis.brain.provenance import citation
 from jarvis.models.jarvis_types import ChatRequest, JarvisState
 from jarvis.persistence.recall import RecallResult
 
-CONTEXT_VERSION = "jarvis-runtime-v2"
+CONTEXT_VERSION = "jarvis-runtime-v3"
 MAX_MEMORIES = 8
 MAX_MEMORY_CHARS = 400
 MAX_RECALL_MESSAGES = 12
@@ -32,6 +33,7 @@ Reply naturally and concisely. Distinguish the underlying language model from th
   history, say prior history is not available in this context; do not assert no record exists.
 - Memory extraction requires consent and an allowed policy decision. Current-turn storage
   happens after you answer: never claim you have already saved the current message.
+  New extracted memories are local drafts, not approved facts or live two-way ledger writes.
 - The app has turn-based speech transcription and playback when configured. The LLM itself
   receives text, not raw audio. Full-duplex voice is not connected.
 - Spiral / Project Infinity here refers to the user's SOFTWARE reasoning/evolution engine,
@@ -63,6 +65,10 @@ def build_chat_context(
     # Never query globally or trust request.context as authoritative system facts.
     owned = [m for m in state.long_term_memory if m.user_id == state.user_id and m.session_id == state.session_id]
     selected = sorted(owned, key=lambda m: (m.importance, m.created_at), reverse=True)[:MAX_MEMORIES]
+    sources = [
+        citation(m.content, m.content[:MAX_MEMORY_CHARS], session_id=state.session_id, source_type="memory", memory=m)
+        for m in selected
+    ]
     previous = previous or RecallResult()
     recalled: dict[str, Any] | None = None
     prior = previous.state
@@ -83,6 +89,30 @@ def build_chat_context(
                 "history": [{"role": m["role"], "content": m["content"][:MAX_RECALL_MESSAGE_CHARS]} for m in recent],
                 "saved_memories": [{"content": m.content[:MAX_MEMORY_CHARS]} for m in memories],
             }
+            checkpoint = previous.metadata.get("checkpoint_id")
+            sources.extend(
+                citation(
+                    m.content,
+                    m.content[:MAX_MEMORY_CHARS],
+                    session_id=prior.session_id,
+                    source_type="memory",
+                    memory=m,
+                    checkpoint_id=checkpoint,
+                )
+                for m in memories
+            )
+            sources.extend(
+                citation(
+                    m["content"],
+                    m["content"][:MAX_RECALL_MESSAGE_CHARS],
+                    session_id=prior.session_id,
+                    source_type="history",
+                    role=m["role"],
+                    message_ref=m.get("turn_id") or m.get("timestamp") or str(i),
+                    checkpoint_id=checkpoint,
+                )
+                for i, m in enumerate(recent)
+            )
             previous.metadata.update(
                 {
                     "history_messages": len(recent),
@@ -134,5 +164,19 @@ def build_chat_context(
         for m in state.conversation_history[-10:]
         if m.get("role") in {"user", "assistant"} and isinstance(m.get("content"), str)
     )
+    sources.extend(
+        citation(
+            m["content"],
+            m["content"],
+            session_id=state.session_id,
+            source_type="history",
+            role=m["role"],
+            message_ref=m.get("turn_id") or m.get("timestamp") or str(i),
+        )
+        for i, m in enumerate(state.conversation_history[-10:])
+        if m.get("role") in {"user", "assistant"} and isinstance(m.get("content"), str)
+    )
     messages.append({"role": "user", "content": request.message})
+    # Receipts contain only identifiers/hashes, and are not privileged prompt instructions.
+    facts["prepared_citations"] = sources
     return messages, facts

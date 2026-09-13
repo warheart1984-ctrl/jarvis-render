@@ -54,8 +54,8 @@
         <label class="consent"><input id="recall" type="checkbox" checked disabled> Recall previous conversation (read-only)</label>
         <p class="hint">When enabled, a bounded excerpt of your latest eligible verified conversation is sent to the chat provider. The source stays unchanged. This service uses a single operator token, not separate user logins.</p>
         <p id="recall-state" role="status">Connect to check recall availability.</p>
-        <label class="consent"><input id="consent" type="checkbox"> Allow memory extraction when policy permits</label>
-        <p class="hint">Conversation history is saved on the server. Extracted memories and external writes are blocked on read-only turns.</p>
+        <label class="consent"><input id="consent" type="checkbox"> Save local draft memories when policy permits</label>
+        <p class="hint">Conversation history is saved on the server. Draft memories may be included in later chat context; they are not approved facts. Read-only turns cannot extract new memories.</p>
         <p id="memory-state">No session loaded.</p><p id="audit-state">Audit not checked.</p>
         <button id="refresh" type="button" class="secondary" disabled>Refresh governance</button>
       </section>
@@ -65,6 +65,12 @@
       </section>
       <p class="hint">Voice uses NVIDIA transcription and speech synthesis, one turn at a time. Full-duplex Nemotron VoiceChat is not connected.</p>
     </aside>
+    <section class="card panel memory-inspector" aria-labelledby="memory-title">
+      <span class="eyebrow">Recall you can inspect</span><h2 id="memory-title">Memory provenance</h2>
+      <p id="write-policy" class="write-policy" role="status">Governed writes disabled · new local memories stay draft. Production EMR gates are not enabled.</p>
+      <p class="hint">Inspect Jarvis's local records and the sources supplied to each reply. Remote ledger and AMUL contents are not verified here. This view grants no external write access.</p>
+      <div id="memory-inspection"><p class="hint">Connect and send a message to inspect memory and turn citations.</p></div>
+    </section>
   </main>
 </body>
 </html>

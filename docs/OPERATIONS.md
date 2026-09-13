@@ -18,16 +18,17 @@ On restart, Jarvis restores only a checkpoint whose audit chain and audited turn
 anchor verify. Legacy checkpoints do not cryptographically bind their entire saved
 state; cross-session recall requires the additional signed attestation described
 in [the chat/recall contract](CHAT_VOICE.md#read-only-recall-across-sessions).
-Recovered sessions are read-only until an authenticated conflict
-resolution or supersession succeeds.
+Recovered production sessions remain read-only; start a new chat to continue.
+Production supersession is blocked until EMR gates are implemented.
 
 ## API contracts
 
 `POST /chat` handles conversational turns. `GET /sessions/{id}/trace` exposes
 decision traces, and `/sessions/{id}/audit/verify` verifies the audit chain.
-Durable memory writes require explicit consent and a confirmed Continuity
-Ledger response. Conflicts and unavailable dependencies never count as
-successful writes.
+Consented local memory extraction creates drafts. Governed external writes are
+disabled by default and always blocked in production pending EMR gates.
+See [memory provenance](MEMORY_PROVENANCE.md) for the authenticated inspection
+endpoint, citation contract, draft lifecycle, and write boundary.
 
 ## Deployment
 

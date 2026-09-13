@@ -9,6 +9,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from jarvis.brain.engine import JarvisEngine
+from jarvis.brain.inspection import inspect_session
 from jarvis.brain.llm import ProviderError
 from jarvis.core.config import settings
 from jarvis.models.jarvis_types import ChatRequest, ChatResponse
@@ -35,6 +36,8 @@ class MemorySupersession(BaseModel):
 
 @router.post("/memory/propose")
 async def propose_memory(request: MemoryProposal) -> dict[str, Any]:
+    if not settings.governed_writes_allowed():
+        raise HTTPException(status_code=403, detail="Governed writes disabled; production EMR gates are not enabled")
     if not request.user_requested:
         raise HTTPException(status_code=400, detail="Explicit user_requested=true is required")
     if engine.continuity is None:
@@ -121,6 +124,8 @@ async def supersede_memory(
 ) -> dict[str, Any]:
     if not settings.service_token or not secrets.compare_digest(x_jarvis_service_token, settings.service_token):
         raise HTTPException(status_code=401, detail="Supersession requires a valid service token")
+    if not settings.governed_writes_allowed():
+        raise HTTPException(status_code=403, detail="Governed writes disabled; production EMR gates are not enabled")
     if not request.user_requested:
         raise HTTPException(status_code=400, detail="Explicit user_requested=true is required")
     if engine.continuity is None:
@@ -227,6 +232,26 @@ async def get_memory(session_id: str) -> dict[str, Any]:
 @router.get("/sessions/{session_id}/trace")
 async def get_trace(session_id: str) -> dict[str, Any]:
     return {"session_id": session_id, "traces": engine.get_trace(session_id)}
+
+
+@router.get("/sessions/{session_id}/memory-inspection")
+async def memory_inspection(
+    session_id: str, user_id: str, x_jarvis_service_token: str = Header(default="")
+) -> dict[str, Any]:
+    # Unlike development diagnostics, this view always requires an operator token.
+    if not settings.service_token or not secrets.compare_digest(x_jarvis_service_token, settings.service_token):
+        raise HTTPException(status_code=401, detail="Memory inspection requires a valid service token")
+    if settings.recall_owner_user_id and user_id != settings.recall_owner_user_id:
+        raise HTTPException(status_code=403, detail="User ID does not match the server-bound operator")
+    state = engine.get_session(session_id)
+    if state is None or state.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Session not found for this operator")
+    lock = await engine._get_session_lock(session_id)
+    async with lock:
+        try:
+            return inspect_session(engine, engine.get_session(session_id))
+        except Exception:
+            raise HTTPException(status_code=503, detail="Memory inspection unavailable; no records confirmed") from None
 
 
 @router.get("/sessions/{session_id}/audit")

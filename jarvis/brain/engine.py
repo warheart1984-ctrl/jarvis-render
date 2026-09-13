@@ -18,6 +18,7 @@ from jarvis.brain.memory import (
     extract_memory,
     update_preferences,
 )
+from jarvis.brain.provenance import context_receipt, memory_reference
 from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
 from jarvis.continuity import ContinuityLedgerClient
@@ -246,7 +247,11 @@ class JarvisEngine:
                 reasoning_trace.append("fail-closed safety lane applied")
 
             # --- 5. REFLECT ---
+            receipt = context_receipt(runtime_context.pop("prepared_citations"), llm_result)
+            runtime_context["context_receipt"] = receipt
             state.conversation_history = add_to_conversation_history(state, request.message, reply)
+            for message in state.conversation_history[-2:]:
+                message["turn_id"] = turn_id
 
             memory_entry = (
                 extract_memory(state, request.message, reply)
@@ -280,7 +285,9 @@ class JarvisEngine:
             # --- 6. EVOLVE (sync with Spiral backend if available) ---
             backend_status = "skipped_read_only"
             if decision == "answer" and request.memory_consent:
-                backend_status = await self._sync_with_spiral(state, request.message, reply)
+                backend_status = "skipped_writes_disabled"
+                if settings.governed_writes_allowed():
+                    backend_status = await self._sync_with_spiral(state, request.message, reply)
             turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
             turn.model = llm_result.model if llm_result else "bounded-local"
@@ -311,6 +318,7 @@ class JarvisEngine:
                         "transaction_id": turn_id,
                         "correlation_id": correlation_id,
                         "runtime_context": runtime_context,
+                        "memory_record": memory_reference(memory_entry) if memory_entry else None,
                     },
                 },
                 {
@@ -321,6 +329,7 @@ class JarvisEngine:
                     "confidence": memory_entry.importance,
                     "type": memory_entry.category,
                     "subject": state.user_id,
+                    "status": "draft",
                     "evidence": [{"source": "chat"}],
                 }
                 if memory_entry
@@ -385,6 +394,7 @@ class JarvisEngine:
                 transaction_id=turn_id,
                 correlation_id=correlation_id,
                 previous_session=runtime_context["previous_session"],
+                context_receipt=receipt,
             )
 
     # ------------------------------------------------------------------
@@ -461,6 +471,9 @@ class JarvisEngine:
 
     async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
         """Optionally push state to the Spiral Intelligence backend."""
+
+        if not settings.governed_writes_allowed():
+            return "skipped_writes_disabled"
 
         try:
             if self.infinity:
