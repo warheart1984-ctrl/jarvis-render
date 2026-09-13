@@ -70,6 +70,7 @@ class ChatResponse(BaseModel):
     transaction_id: str = ""
     correlation_id: str = ""
     previous_session: dict[str, Any] = Field(default_factory=lambda: {"status": "disabled"})
+    context_receipt: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded", "citations": []})
 
 
 class SpiralTurn(BaseModel):

@@ -177,3 +177,10 @@ class JarvisStore:
             ).fetchall()
         terms = query.lower().split()
         return [dict(r) for r in rows if not terms or any(t in r["content"].lower() for t in terms)]
+
+    def inspect_memories(self, session_id: str) -> list[dict[str, Any]]:
+        """Read draft/legacy rows; callers must enforce ownership and integrity."""
+        with sqlite3.connect(self.path) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute("SELECT * FROM memories WHERE session_id=? ORDER BY created_at DESC", (session_id,))
+            return [dict(row) for row in rows]

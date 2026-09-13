@@ -93,6 +93,11 @@ class JarvisSettings(BaseSettings):
     # Single-operator recall; never derive this principal from the request's user_id.
     recall_owner_user_id: str = ""
     environment: str = "development"
+    governed_writes_enabled: bool = False
+
+    def governed_writes_allowed(self) -> bool:
+        # Production promotion requires EMR gates, which are not implemented yet.
+        return self.governed_writes_enabled and self.environment.lower() not in {"production", "prod"}
 
     def validate_deployment(self) -> None:
         if self.environment.lower() in {"production", "prod"} and not self.service_token:

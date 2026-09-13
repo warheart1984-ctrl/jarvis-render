@@ -8,6 +8,8 @@ services:
     envVars:
       - key: JARVIS_ENVIRONMENT
         value: production
+      - key: JARVIS_GOVERNED_WRITES_ENABLED
+        value: "false"
       - key: JARVIS_LLM_PROVIDER
         value: nvidia
       - key: JARVIS_LLM_MODEL

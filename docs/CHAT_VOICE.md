@@ -117,6 +117,14 @@ not configured, but returns 503 if local storage is unavailable.
 
 ## Verification
 
+### Inspectable memory and draft writes
+
+The console now includes a Memory provenance panel and per-reply source lists.
+See [the memory inspection contract](MEMORY_PROVENANCE.md) for exact IDs/hashes,
+optional AMUL references, source-inclusion semantics, and legacy limitations.
+New local extracted memories stay draft. Governed external writes are off by
+default and blocked in production until EMR gates are implemented.
+
 ### Runtime context and long speech
 
 Each model receives server-generated facts about Jarvis (not model self-training),
@@ -227,7 +235,7 @@ user environment using the same isolated test runtime.
 
 Run `node --test tests/ui_audio.test.mjs` with Node 22+ for the browser audio
 encoder and playback-cleanup regressions. In restricted environments that block
-test subprocesses, use `node --test --test-isolation=none tests/ui_audio.test.mjs tests/ui_recall.test.mjs`.
+test subprocesses, use `node --test --test-isolation=none tests/ui_audio.test.mjs tests/ui_recall.test.mjs tests/ui_memory.test.mjs`.
 
 Inside the deployed Render Shell: python -m jarvis.smoke
 This creates a synthetic test session and tests auth, two text turns,

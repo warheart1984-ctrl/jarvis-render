@@ -58,6 +58,7 @@ def extract_memory(
         intent_context=state.intent,
         energy_at_capture=state.energy,
         created_at=datetime.now(timezone.utc).isoformat(),
+        metadata={"status": "draft"},
     )
 
 

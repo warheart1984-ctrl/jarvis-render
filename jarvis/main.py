@@ -159,6 +159,9 @@ async def capabilities() -> dict[str, object]:
         "recall_configured": bool(settings.service_token and settings.recall_owner_user_id),
         "recall_owner_user_id": settings.recall_owner_user_id if settings.service_token else "",
         "recall_auth_mode": "single_operator_service_token",
+        "memory_inspection_available": True,
+        "governed_writes_enabled": settings.governed_writes_allowed(),
+        "new_memory_status": "draft",
         "build": "jarvis-chat-voice-v5",
     }
 

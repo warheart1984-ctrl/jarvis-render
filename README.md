@@ -49,6 +49,9 @@ Jarvis inherits the five intent modes from Spiral Intelligence:
 For the deployed text and voice console, open `/ui/`. See
 [Chat and voice setup](docs/CHAT_VOICE.md) for NVIDIA configuration, API contracts,
 microphone controls, recovery behavior, and the deployed smoke test.
+The [memory provenance panel](docs/MEMORY_PROVENANCE.md) exposes source IDs,
+hashes and per-turn context receipts. New memories stay draft; production
+governed writes remain disabled pending EMR gates.
 
 ```bash
 # Install dependencies
