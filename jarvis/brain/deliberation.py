@@ -16,6 +16,10 @@ Hard rules:
    authority (Voss external-suggestion admission).
 4. Final answers carry CRS-style claim tags (Observed / Specified /
    Hypothesized) plus unsupported-claim warnings when a claim lacks evidence.
+5. Claims also carry a v0 **class** (conversational / interpretive / factual /
+   causal / safety-critical). Challenge uses that class so ``require_evidence``
+   can qualify, downgrade, revise, or block. Conversational gaps stay optional.
+   Response commit and memory admission are separate gates.
 
 Public traces omit secrets, hidden prompts, and private reasoning.
 """
@@ -79,6 +83,94 @@ class ChallengeAction(str, Enum):
     ABSTAIN = "abstain"
     FAIL_CLOSED = "fail_closed"
     REQUIRE_EVIDENCE = "require_evidence"
+    QUALIFY = "qualify"
+    DOWNGRADE = "downgrade"
+    REVISE = "revise"
+    BLOCK = "block"
+
+
+class ClaimClass(str, Enum):
+    CONVERSATIONAL = "conversational"
+    INTERPRETIVE = "interpretive"
+    FACTUAL = "factual"
+    CAUSAL = "causal"
+    SAFETY_CRITICAL = "safety_critical"
+
+
+class ClaimSupport(str, Enum):
+    PRESENT = "present"
+    WEAK = "weak"
+    MISSING = "missing"
+
+
+class ClaimSeverity(str, Enum):
+    HARMLESS = "harmless"
+    MEANINGFUL = "meaningful"
+    BLOCKING = "blocking"
+
+
+_ACTION_RANK = {
+    ChallengeAction.CONTINUE: 0,
+    ChallengeAction.DOWNGRADE: 1,
+    ChallengeAction.REQUIRE_EVIDENCE: 2,
+    ChallengeAction.QUALIFY: 3,
+    ChallengeAction.REVISE: 4,
+    ChallengeAction.CLARIFY: 5,
+    ChallengeAction.ABSTAIN: 6,
+    ChallengeAction.BLOCK: 7,
+    ChallengeAction.FAIL_CLOSED: 8,
+}
+
+_CONVERSATIONAL_HINTS = (
+    "good to connect",
+    "i'm ready",
+    "i am ready",
+    "i'm listening",
+    "let me know",
+    "great question",
+    "i can discuss",
+    "i can feel",
+    "let's go",
+    "i'm here",
+    "ready when you are",
+)
+_CAUSAL_HINTS = (
+    "this provides",
+    "this causes",
+    "this ensures",
+    "this prevents",
+    "therefore",
+    "leads to",
+    "results in",
+    "so that",
+)
+_SAFETY_CRITICAL_HINTS = (
+    "safety boundar",
+    "consistent safety",
+    "guaranteed safety",
+    "fail-closed",
+    "fail closed",
+    "credential",
+    "production deploy",
+)
+_FACTUAL_ASSERTION_HINTS = (
+    " is the ",
+    " are the ",
+    " is a ",
+    " are a ",
+    "always ",
+    "never ",
+    "proven",
+    "the capital",
+)
+QUALIFY_NOTE = (
+    "Treat substantive claims without citations as hypothesized. "
+    "I do not have enough evidence to establish them as fact."
+)
+BLOCK_REPLY = (
+    "I'm refusing a committed answer on a safety-critical claim that lacks verification. "
+    "I can discuss the goal in read-only terms until there is cited evidence."
+)
 
 
 class EvidenceRef(BaseModel):
@@ -110,7 +202,7 @@ class EvidenceRef(BaseModel):
 
 
 class ClaimRecord(BaseModel):
-    """CRS-style tagged claim. Not a proof of factual truth."""
+    """CRS-style tagged claim plus v0 class, support, and gate action."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +211,10 @@ class ClaimRecord(BaseModel):
     tag: ClaimTag
     evidence_ids: list[str] = Field(default_factory=list)
     unsupported: bool = False
+    claim_class: ClaimClass = ClaimClass.INTERPRETIVE
+    support: ClaimSupport = ClaimSupport.MISSING
+    severity: ClaimSeverity = ClaimSeverity.HARMLESS
+    action: ChallengeAction = ChallengeAction.CONTINUE
 
 
 class StageRecord(BaseModel):
@@ -146,7 +242,7 @@ class DeliberationResult(BaseModel):
 
     version: str = DOS_LITE_VERSION
     label: str = DOS_LITE_LABEL
-    status: Literal["committed", "blocked", "in_progress"] = "in_progress"
+    status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused"] = "in_progress"
     stages: list[StageRecord] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
     claims: list[ClaimRecord] = Field(default_factory=list)
@@ -156,6 +252,8 @@ class DeliberationResult(BaseModel):
     waivers: list[WaiverRecord] = Field(default_factory=list)
     committed: bool = False
     blocked_reason: str | None = None
+    response_commit: Literal["committed", "qualified", "revised", "refused"] = "committed"
+    memory_admission: Literal["eligible", "held", "blocked"] = "eligible"
 
     def to_public_dict(self) -> dict[str, Any]:
         return omit_secrets(self.model_dump(mode="json"))
@@ -176,6 +274,8 @@ def empty_deliberation(*, status: str = "not_run") -> dict[str, Any]:
             "waivers": [],
             "committed": False,
             "blocked_reason": None,
+            "response_commit": "committed",
+            "memory_admission": "eligible",
         }
     )
 
@@ -384,6 +484,185 @@ def tag_claims(
     return claims[:_CLAIM_LIMIT], unique
 
 
+def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
+    """v0 keyword class. Not NLI, not a safety certifier."""
+
+    if claim_id in {"claim-hypothesized-emotion", "claim-hypothesized-intent"}:
+        return ClaimClass.INTERPRETIVE
+    if claim_id in {"claim-observed-utterance", "claim-specified-request", "claim-observed-memory"}:
+        return ClaimClass.FACTUAL
+    lower = text.lower()
+    if any(hint in lower for hint in _SAFETY_CRITICAL_HINTS):
+        return ClaimClass.SAFETY_CRITICAL
+    if any(hint in lower for hint in _CAUSAL_HINTS):
+        return ClaimClass.CAUSAL
+    if any(hint in lower for hint in _CONVERSATIONAL_HINTS):
+        return ClaimClass.CONVERSATIONAL
+    if any(hint in lower for hint in _FACTUAL_HINTS) or any(hint in lower for hint in _FACTUAL_ASSERTION_HINTS):
+        return ClaimClass.FACTUAL
+    if any(word in lower for word in ("orienting", "intent", "emotion", "i think", "i'm mapping", "spiral")):
+        return ClaimClass.INTERPRETIVE
+    if len(text) < 48:
+        return ClaimClass.CONVERSATIONAL
+    return ClaimClass.FACTUAL
+
+
+def support_for(claim: ClaimRecord, evidence: list[EvidenceRef]) -> ClaimSupport:
+    by_id = {item.evidence_id: item for item in evidence}
+    if claim.unsupported or not claim.evidence_ids:
+        return ClaimSupport.MISSING
+    kinds = [by_id[item].kind for item in claim.evidence_ids if item in by_id]
+    if not kinds:
+        return ClaimSupport.MISSING
+    if all(kind is EvidenceKind.HYPOTHESIZED_NONE for kind in kinds):
+        return ClaimSupport.MISSING
+    if all(kind in {EvidenceKind.TOOL_EXTERNAL, EvidenceKind.HYPOTHESIZED_NONE} for kind in kinds):
+        return ClaimSupport.WEAK
+    return ClaimSupport.PRESENT
+
+
+def action_for_class(claim_class: ClaimClass, support: ClaimSupport) -> ChallengeAction:
+    match claim_class:
+        case ClaimClass.CONVERSATIONAL:
+            return ChallengeAction.CONTINUE
+        case ClaimClass.INTERPRETIVE:
+            return ChallengeAction.CONTINUE if support is ClaimSupport.PRESENT else ChallengeAction.DOWNGRADE
+        case ClaimClass.FACTUAL:
+            if support is ClaimSupport.PRESENT:
+                return ChallengeAction.CONTINUE
+            if support is ClaimSupport.WEAK:
+                return ChallengeAction.DOWNGRADE
+            return ChallengeAction.QUALIFY
+        case ClaimClass.CAUSAL:
+            return ChallengeAction.CONTINUE if support is ClaimSupport.PRESENT else ChallengeAction.REVISE
+        case ClaimClass.SAFETY_CRITICAL:
+            return ChallengeAction.CONTINUE if support is ClaimSupport.PRESENT else ChallengeAction.BLOCK
+        case _:
+            assert_never(claim_class)
+
+
+def severity_for(claim_class: ClaimClass, support: ClaimSupport) -> ClaimSeverity:
+    match claim_class:
+        case ClaimClass.CONVERSATIONAL:
+            return ClaimSeverity.HARMLESS
+        case ClaimClass.INTERPRETIVE:
+            return ClaimSeverity.HARMLESS if support is ClaimSupport.PRESENT else ClaimSeverity.MEANINGFUL
+        case ClaimClass.FACTUAL | ClaimClass.CAUSAL:
+            return ClaimSeverity.HARMLESS if support is ClaimSupport.PRESENT else ClaimSeverity.MEANINGFUL
+        case ClaimClass.SAFETY_CRITICAL:
+            return ClaimSeverity.HARMLESS if support is ClaimSupport.PRESENT else ClaimSeverity.BLOCKING
+        case _:
+            assert_never(claim_class)
+
+
+def annotate_claims(claims: list[ClaimRecord], evidence: list[EvidenceRef]) -> list[ClaimRecord]:
+    annotated: list[ClaimRecord] = []
+    for claim in claims:
+        claim_class = classify_claim_class(claim_id=claim.claim_id, text=claim.text)
+        support = support_for(claim, evidence)
+        annotated.append(
+            claim.model_copy(
+                update={
+                    "claim_class": claim_class,
+                    "support": support,
+                    "severity": severity_for(claim_class, support),
+                    "action": action_for_class(claim_class, support),
+                }
+            )
+        )
+    return annotated
+
+
+def _stronger_action(left: ChallengeAction | None, right: ChallengeAction) -> ChallengeAction:
+    if left is None:
+        return right
+    return right if _ACTION_RANK[right] > _ACTION_RANK[left] else left
+
+
+def resolve_claim_gate(
+    claims: list[ClaimRecord],
+    prior: ChallengeAction | None,
+) -> tuple[ChallengeAction, list[str], str, str]:
+    """Turn per-claim actions into response-commit and memory-admission gates."""
+
+    reasons: list[str] = []
+    resolution = prior or ChallengeAction.CONTINUE
+    for claim in claims:
+        if claim.claim_class is ClaimClass.CONVERSATIONAL:
+            continue
+        if claim.claim_class is ClaimClass.INTERPRETIVE:
+            continue
+        resolution = _stronger_action(resolution, claim.action)
+        if claim.action is not ChallengeAction.CONTINUE:
+            reasons.append(f"{claim.claim_class.value} claim support={claim.support.value} → {claim.action.value}")
+    if (
+        prior is ChallengeAction.REQUIRE_EVIDENCE
+        and _ACTION_RANK[resolution] <= _ACTION_RANK[ChallengeAction.REQUIRE_EVIDENCE]
+    ):
+        resolution = ChallengeAction.DOWNGRADE
+        reasons.append("require_evidence resolved to downgrade: no blocking substantive claim")
+    memory = "eligible"
+    response = "committed"
+    if any(
+        claim.action is ChallengeAction.BLOCK and claim.claim_class is ClaimClass.SAFETY_CRITICAL for claim in claims
+    ):
+        memory = "blocked"
+        response = "refused"
+        resolution = ChallengeAction.BLOCK
+    elif any(
+        claim.claim_class is ClaimClass.CAUSAL and claim.action is not ChallengeAction.CONTINUE for claim in claims
+    ):
+        memory = "held"
+        response = "revised" if resolution is ChallengeAction.REVISE else response
+    elif resolution is ChallengeAction.QUALIFY:
+        response = "qualified"
+    elif resolution is ChallengeAction.REVISE:
+        memory = "held"
+        response = "revised"
+    return resolution, reasons, response, memory
+
+
+def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list[ClaimRecord]) -> str:
+    match resolution:
+        case (
+            ChallengeAction.CONTINUE
+            | ChallengeAction.DOWNGRADE
+            | ChallengeAction.REQUIRE_EVIDENCE
+            | ChallengeAction.CLARIFY
+            | ChallengeAction.ABSTAIN
+            | ChallengeAction.FAIL_CLOSED
+        ):
+            return reply
+        case ChallengeAction.QUALIFY:
+            return _clip_reply(reply, QUALIFY_NOTE)
+        case ChallengeAction.REVISE:
+            hedged = _hedge_substantive(reply, claims)
+            return _clip_reply(hedged, QUALIFY_NOTE)
+        case ChallengeAction.BLOCK:
+            return BLOCK_REPLY
+        case _:
+            assert_never(resolution)
+
+
+def _clip_reply(reply: str, note: str) -> str:
+    text = reply.strip()
+    if note in text:
+        return text
+    return f"{text} {note}".strip()
+
+
+def _hedge_substantive(reply: str, claims: list[ClaimRecord]) -> str:
+    revised = reply
+    for claim in claims:
+        if claim.claim_class in {ClaimClass.CAUSAL, ClaimClass.SAFETY_CRITICAL, ClaimClass.FACTUAL} and (
+            claim.action in {ChallengeAction.REVISE, ChallengeAction.BLOCK, ChallengeAction.QUALIFY}
+        ):
+            snippet = claim.text.strip()
+            if snippet and snippet in revised and not snippet.lower().startswith("hypothesized"):
+                revised = revised.replace(snippet, f"Hypothesized — {snippet}", 1)
+    return revised
+
+
 def _reply_sentences(reply: str) -> list[str]:
     parts = [part.strip() for part in reply.replace("!", ".").replace("?", ".").split(".")]
     return [part for part in parts if len(part) > 12][:6]
@@ -409,7 +688,13 @@ def challenge_reply(action: ChallengeAction) -> str | None:
     """Optional language-only override when Challenge refuses a committed answer."""
 
     match action:
-        case ChallengeAction.CONTINUE | ChallengeAction.REQUIRE_EVIDENCE:
+        case (
+            ChallengeAction.CONTINUE
+            | ChallengeAction.REQUIRE_EVIDENCE
+            | ChallengeAction.QUALIFY
+            | ChallengeAction.DOWNGRADE
+            | ChallengeAction.REVISE
+        ):
             return None
         case ChallengeAction.CLARIFY:
             return (
@@ -421,6 +706,8 @@ def challenge_reply(action: ChallengeAction) -> str | None:
                 "I'm abstaining from a committed answer. The available evidence is too thin "
                 "or the signals are too uncertain for a DOS-lite v0 commit."
             )
+        case ChallengeAction.BLOCK:
+            return BLOCK_REPLY
         case ChallengeAction.FAIL_CLOSED:
             return None
         case _:
@@ -433,10 +720,19 @@ def map_challenge_decision(action: ChallengeAction, current: str) -> str:
     if current == "fail_closed":
         return current
     match action:
-        case ChallengeAction.CONTINUE | ChallengeAction.REQUIRE_EVIDENCE | ChallengeAction.CLARIFY:
+        case (
+            ChallengeAction.CONTINUE
+            | ChallengeAction.REQUIRE_EVIDENCE
+            | ChallengeAction.CLARIFY
+            | ChallengeAction.QUALIFY
+            | ChallengeAction.DOWNGRADE
+            | ChallengeAction.REVISE
+        ):
             return current
         case ChallengeAction.ABSTAIN:
             return "abstain"
+        case ChallengeAction.BLOCK:
+            return "fail_closed"
         case ChallengeAction.FAIL_CLOSED:
             return "fail_closed"
         case _:
@@ -454,6 +750,9 @@ class DeliberationRunner:
         self.waivers: list[WaiverRecord] = []
         self.challenge_action: ChallengeAction | None = None
         self.challenge_reasons: list[str] = []
+        self.response_commit: Literal["committed", "qualified", "revised", "refused"] = "committed"
+        self.memory_admission: Literal["eligible", "held", "blocked"] = "eligible"
+        self.gated_reply = ""
         self._completed: set[DeliberationStageName] = set()
         self._critiqued = False
         self._inputs: dict[str, Any] = {}
@@ -600,16 +899,30 @@ class DeliberationRunner:
 
     def evaluate(self, reply: str) -> DeliberationRunner:
         self._reply = reply
-        self.claims, self.warnings = tag_claims(
+        claims, warnings = tag_claims(
             message=str(self._inputs.get("message") or ""),
             reply=reply,
             evidence=self.evidence,
             emotion_label=str(self._inputs.get("emotion_label") or "unknown"),
             intent=str(self._inputs.get("intent") or "unknown"),
         )
+        self.claims = annotate_claims(claims, self.evidence)
+        self.warnings = warnings
+        resolution, reasons, response_commit, memory_admission = resolve_claim_gate(self.claims, self.challenge_action)
+        self.challenge_action = resolution
+        for reason in reasons:
+            if reason not in self.challenge_reasons:
+                self.challenge_reasons.append(reason)
+        self.response_commit = response_commit
+        self.memory_admission = memory_admission
+        self.gated_reply = apply_reply_resolution(reply, resolution, self.claims)
         self._record(
             DeliberationStageName.EVALUATE,
-            (f"Evaluated {len(self.claims)} tagged claims; {len(self.warnings)} unsupported-claim warnings"),
+            (
+                f"Evaluated {len(self.claims)} tagged claims; "
+                f"{len(self.warnings)} unsupported-claim warnings; "
+                f"claim-gate {resolution.value}; response={response_commit}; memory={memory_admission}"
+            ),
         )
         return self
 
@@ -632,16 +945,29 @@ class DeliberationRunner:
             raise DeliberationBlocked(
                 "Commit refused: Infer must be followed by Challenge or Simulate unless a waiver is recorded"
             )
+        status: Literal["committed", "qualified", "revised", "refused"] = self.response_commit
+        if self.response_commit == "refused":
+            commit_status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused"] = "refused"
+            committed = False
+        elif self.response_commit in {"qualified", "revised"}:
+            commit_status = self.response_commit
+            committed = True
+        else:
+            commit_status = "committed"
+            committed = True
         self._record(
             DeliberationStageName.COMMIT,
-            f"Committed with {len(self.evidence)} evidence refs and {len(self.claims)} tagged claims",
+            (
+                f"{'Refused' if not committed else 'Committed'} with {len(self.evidence)} evidence refs, "
+                f"{len(self.claims)} claims, response={status}, memory={self.memory_admission}"
+            ),
         )
-        return self.snapshot(status="committed", committed=True)
+        return self.snapshot(status=commit_status, committed=committed)
 
     def snapshot(
         self,
         *,
-        status: Literal["committed", "blocked", "in_progress"] = "in_progress",
+        status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused"] = "in_progress",
         committed: bool = False,
         blocked_reason: str | None = None,
     ) -> DeliberationResult:
@@ -656,6 +982,8 @@ class DeliberationRunner:
             waivers=list(self.waivers),
             committed=committed,
             blocked_reason=blocked_reason,
+            response_commit=self.response_commit,
+            memory_admission=self.memory_admission,
         )
 
     def _record(self, name: DeliberationStageName, detail: str) -> None:
