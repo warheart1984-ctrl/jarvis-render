@@ -65,6 +65,7 @@ def test_resolve_calculator_requires_explicit_request() -> None:
     assert resolve_calculator_expression("2+2") is None
     assert resolve_calculator_expression("calculate 2+2") == "2+2"
     assert resolve_calculator_expression("What is 2+2?") == "2+2"
+    assert resolve_calculator_expression("please calculate 2+2 and remember this preference always for later") == "2+2"
 
 
 def test_resolve_clock_requires_explicit_request() -> None:

@@ -58,6 +58,18 @@ class UnsafeExpression(ValueError):
     """Expression is not safe arithmetic."""
 
 
+_MATH_TOKEN = re.compile(r"-?[\d.(][\d\s+\-*/().%eE]*")
+
+
+def extract_expression(text: str) -> str:
+    """Keep the arithmetic payload; drop trailing prose after an explicit calculate."""
+
+    match = _MATH_TOKEN.search(text or "")
+    if not match:
+        return (text or "").strip(" .?!:;= ")
+    return match.group(0).strip(" .?!:;= ")
+
+
 def looks_like_math(expression: str) -> bool:
     text = (expression or "").strip()
     if not text or len(text) > MAX_EXPRESSION_CHARS:
@@ -82,12 +94,13 @@ def resolve_calculator_expression(message: str) -> str | None:
     for pattern in _EXPLICIT_CALC:
         match = pattern.search(text)
         if match:
-            return (match.group(1) or "").strip(" .?!:;= ")
+            captured = extract_expression(match.group(1) or "")
+            return captured
     for pattern in _MATH_ASK:
         match = pattern.search(text)
         if not match:
             continue
-        captured = (match.group(1) or "").strip(" .?!:;= ")
+        captured = extract_expression(match.group(1) or "")
         if looks_like_math(captured):
             return captured
     return None
