@@ -811,13 +811,13 @@ def _coverage_units(reply: str) -> list[str]:
     return units
 
 
-def _content_tokens(text: str) -> set[str]:
+def _content_tokens(text: str, *, stem: bool = True) -> set[str]:
     tokens: set[str] = set()
     for word in _CONTENT_TOKEN_RE.findall((text or "").lower()):
         if len(word) < 4 or word in _STOPWORDS:
             continue
         tokens.add(word)
-        if word.endswith("s") and len(word) > 4:
+        if stem and word.endswith("s") and len(word) > 4:
             tokens.add(word[:-1])
     return tokens
 
@@ -845,8 +845,8 @@ def _is_primarily_restatement(sentence: str, utterance: str) -> bool:
     """True when most content tokens are already in the user request. Not NLI."""
 
     body = _strip_restatement_glue(sentence)
-    claim_tokens = _content_tokens(body)
-    utter_tokens = _content_tokens(utterance)
+    claim_tokens = _content_tokens(body, stem=False)
+    utter_tokens = _content_tokens(utterance, stem=False)
     shared = claim_tokens & utter_tokens
     if len(shared) < 2:
         return False
