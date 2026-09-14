@@ -19,7 +19,10 @@ Hard rules:
 5. Claims also carry a v0 **class** (conversational / interpretive / factual /
    causal / safety-critical). Challenge uses that class so ``require_evidence``
    can qualify, downgrade, revise, or block. Conversational gaps stay optional.
-   Response commit and memory admission are separate gates.
+   ``require_evidence`` plus an unsupported factual/safety claim is not a silent
+   committed answer. The current user utterance is context, not automatic
+   support for factual/causal/safety-critical claims. Abstain is not
+   ``committed=true``. Response commit and memory admission are separate gates.
 
 Public traces omit secrets, hidden prompts, and private reasoning.
 """
@@ -315,7 +318,9 @@ class DeliberationResult(BaseModel):
 
     version: str = DOS_LITE_VERSION
     label: str = DOS_LITE_LABEL
-    status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused"] = "in_progress"
+    status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused", "abstained"] = (
+        "in_progress"
+    )
     stages: list[StageRecord] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
     claims: list[ClaimRecord] = Field(default_factory=list)
@@ -325,7 +330,7 @@ class DeliberationResult(BaseModel):
     waivers: list[WaiverRecord] = Field(default_factory=list)
     committed: bool = False
     blocked_reason: str | None = None
-    response_commit: Literal["committed", "qualified", "revised", "refused"] = "committed"
+    response_commit: Literal["committed", "qualified", "revised", "refused", "abstained"] = "committed"
     memory_admission: Literal["eligible", "held", "blocked"] = "eligible"
     reply_coverage: ReplyCoverage = Field(default_factory=ReplyCoverage)
 
@@ -578,9 +583,7 @@ def tag_claims(
             seen.add(warning)
             unique.append(warning)
     if uncovered:
-        unique.append(
-            f"whole-answer coverage incomplete: {len(uncovered)} reply sentence(s) not tagged"
-        )
+        unique.append(f"whole-answer coverage incomplete: {len(uncovered)} reply sentence(s) not tagged")
     return claims[:_CLAIM_LIMIT], unique, coverage
 
 
@@ -607,16 +610,38 @@ def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
     return ClaimClass.FACTUAL
 
 
+def _evidence_justifies(claim: ClaimRecord, item: EvidenceRef) -> bool:
+    """Whether an evidence ref can justify (not merely match) this claim. v0, not NLI."""
+
+    if item.kind is EvidenceKind.HYPOTHESIZED_NONE:
+        return False
+    if not _current_utterance_item(item):
+        # Token overlap may cite a candidate; it does not verify a safety-critical assertion.
+        return claim.claim_class is not ClaimClass.SAFETY_CRITICAL
+    if claim.claim_id in {"claim-observed-utterance", "claim-specified-request"}:
+        return True
+    match claim.claim_class:
+        case ClaimClass.CONVERSATIONAL | ClaimClass.INTERPRETIVE:
+            return True
+        case ClaimClass.FACTUAL | ClaimClass.CAUSAL | ClaimClass.SAFETY_CRITICAL:
+            return False
+        case _:
+            assert_never(claim.claim_class)
+
+
 def support_for(claim: ClaimRecord, evidence: list[EvidenceRef]) -> ClaimSupport:
     by_id = {item.evidence_id: item for item in evidence}
     if claim.unsupported or not claim.evidence_ids:
         return ClaimSupport.MISSING
-    kinds = [by_id[item].kind for item in claim.evidence_ids if item in by_id]
-    if not kinds:
+    items = [by_id[eid] for eid in claim.evidence_ids if eid in by_id]
+    if not items:
         return ClaimSupport.MISSING
-    if all(kind is EvidenceKind.HYPOTHESIZED_NONE for kind in kinds):
+    if all(item.kind is EvidenceKind.HYPOTHESIZED_NONE for item in items):
         return ClaimSupport.MISSING
-    if all(kind in {EvidenceKind.TOOL_EXTERNAL, EvidenceKind.HYPOTHESIZED_NONE} for kind in kinds):
+    justifying = [item for item in items if _evidence_justifies(claim, item)]
+    if not justifying:
+        return ClaimSupport.MISSING
+    if all(item.kind in {EvidenceKind.TOOL_EXTERNAL, EvidenceKind.HYPOTHESIZED_NONE} for item in justifying):
         return ClaimSupport.WEAK
     return ClaimSupport.PRESENT
 
@@ -659,11 +684,11 @@ def annotate_claims(claims: list[ClaimRecord], evidence: list[EvidenceRef]) -> l
     annotated: list[ClaimRecord] = []
     for claim in claims:
         claim_class = classify_claim_class(claim_id=claim.claim_id, text=claim.text)
-        support = support_for(claim, evidence)
+        classified = claim.model_copy(update={"claim_class": claim_class})
+        support = support_for(classified, evidence)
         annotated.append(
-            claim.model_copy(
+            classified.model_copy(
                 update={
-                    "claim_class": claim_class,
                     "support": support,
                     "severity": severity_for(claim_class, support),
                     "action": action_for_class(claim_class, support),
@@ -701,14 +726,20 @@ def resolve_claim_gate(
     ):
         resolution = ChallengeAction.DOWNGRADE
         reasons.append("require_evidence resolved to downgrade: no blocking substantive claim")
-    memory = "eligible"
-    response = "committed"
+    memory: Literal["eligible", "held", "blocked"] = "eligible"
+    response: Literal["committed", "qualified", "revised", "refused", "abstained"] = "committed"
     if any(
         claim.action is ChallengeAction.BLOCK and claim.claim_class is ClaimClass.SAFETY_CRITICAL for claim in claims
     ):
         memory = "blocked"
         response = "refused"
         resolution = ChallengeAction.BLOCK
+    elif resolution is ChallengeAction.FAIL_CLOSED:
+        memory = "blocked"
+        response = "refused"
+    elif resolution is ChallengeAction.ABSTAIN:
+        memory = "held"
+        response = "abstained"
     elif any(
         claim.claim_class is ClaimClass.CAUSAL and claim.action is not ChallengeAction.CONTINUE for claim in claims
     ):
@@ -725,12 +756,12 @@ def resolve_claim_gate(
 def apply_coverage_gate(
     coverage: ReplyCoverage,
     resolution: ChallengeAction,
-    response_commit: Literal["committed", "qualified", "revised", "refused"],
+    response_commit: Literal["committed", "qualified", "revised", "refused", "abstained"],
     memory_admission: Literal["eligible", "held", "blocked"],
 ) -> tuple[
     ChallengeAction,
     list[str],
-    Literal["committed", "qualified", "revised", "refused"],
+    Literal["committed", "qualified", "revised", "refused", "abstained"],
     Literal["eligible", "held", "blocked"],
 ]:
     """Unchecked reply text is a gate, not a dashboard. v0 heuristic, not NLI."""
@@ -738,6 +769,8 @@ def apply_coverage_gate(
     if coverage.complete:
         return resolution, [], response_commit, memory_admission
     extra = ["unchecked reply text cannot be a fully committed answer"]
+    if response_commit in {"refused", "abstained"}:
+        return resolution, extra, response_commit, memory_admission
     if any(
         classify_claim_class(claim_id="claim-uncovered", text=text) is ClaimClass.SAFETY_CRITICAL
         for text in coverage.uncovered
@@ -755,10 +788,11 @@ def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list
             | ChallengeAction.DOWNGRADE
             | ChallengeAction.REQUIRE_EVIDENCE
             | ChallengeAction.CLARIFY
-            | ChallengeAction.ABSTAIN
             | ChallengeAction.FAIL_CLOSED
         ):
             return reply
+        case ChallengeAction.ABSTAIN:
+            return challenge_reply(ChallengeAction.ABSTAIN) or reply
         case ChallengeAction.QUALIFY:
             return _clip_reply(reply, QUALIFY_NOTE)
         case ChallengeAction.REVISE:
@@ -859,6 +893,7 @@ def _utterance_may_justify(claim_class: ClaimClass, sentence: str, utterance: st
         case ClaimClass.CONVERSATIONAL | ClaimClass.INTERPRETIVE:
             return True
         case ClaimClass.FACTUAL:
+            # Candidate citation of a specified restatement, not justification.
             return _is_primarily_restatement(sentence, utterance)
         case ClaimClass.CAUSAL | ClaimClass.SAFETY_CRITICAL:
             return False
@@ -980,7 +1015,7 @@ class DeliberationRunner:
         self.waivers: list[WaiverRecord] = []
         self.challenge_action: ChallengeAction | None = None
         self.challenge_reasons: list[str] = []
-        self.response_commit: Literal["committed", "qualified", "revised", "refused"] = "committed"
+        self.response_commit: Literal["committed", "qualified", "revised", "refused", "abstained"] = "committed"
         self.memory_admission: Literal["eligible", "held", "blocked"] = "eligible"
         self.gated_reply = ""
         self.reply_coverage = ReplyCoverage()
@@ -1184,21 +1219,36 @@ class DeliberationRunner:
             raise DeliberationBlocked(
                 "Commit refused: Infer must be followed by Challenge or Simulate unless a waiver is recorded"
             )
-        status: Literal["committed", "qualified", "revised", "refused"] = self.response_commit
-        if self.response_commit == "refused":
-            commit_status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused"] = "refused"
+        if self.response_commit in {"refused", "abstained"} or self.challenge_action in {
+            ChallengeAction.ABSTAIN,
+            ChallengeAction.BLOCK,
+            ChallengeAction.FAIL_CLOSED,
+        }:
             committed = False
+            if self.response_commit == "abstained" or self.challenge_action is ChallengeAction.ABSTAIN:
+                commit_status: Literal[
+                    "committed", "blocked", "in_progress", "qualified", "revised", "refused", "abstained"
+                ] = "abstained"
+                self.response_commit = "abstained"
+            else:
+                commit_status = "refused"
+                if self.response_commit == "committed":
+                    self.response_commit = "refused"
         elif self.response_commit in {"qualified", "revised"}:
             commit_status = self.response_commit
             committed = True
         else:
             commit_status = "committed"
             committed = True
+        if not committed:
+            verb = "Abstained" if self.response_commit == "abstained" else "Refused"
+        else:
+            verb = "Committed"
         self._record(
             DeliberationStageName.COMMIT,
             (
-                f"{'Refused' if not committed else 'Committed'} with {len(self.evidence)} evidence refs, "
-                f"{len(self.claims)} claims, response={status}, memory={self.memory_admission}"
+                f"{verb} with {len(self.evidence)} evidence refs, "
+                f"{len(self.claims)} claims, response={self.response_commit}, memory={self.memory_admission}"
             ),
         )
         return self.snapshot(status=commit_status, committed=committed)
@@ -1206,7 +1256,9 @@ class DeliberationRunner:
     def snapshot(
         self,
         *,
-        status: Literal["committed", "blocked", "in_progress", "qualified", "revised", "refused"] = "in_progress",
+        status: Literal[
+            "committed", "blocked", "in_progress", "qualified", "revised", "refused", "abstained"
+        ] = "in_progress",
         committed: bool = False,
         blocked_reason: str | None = None,
     ) -> DeliberationResult:
