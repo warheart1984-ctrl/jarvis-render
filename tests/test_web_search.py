@@ -325,7 +325,7 @@ async def test_no_auto_retrieve_without_explicit_search(tmp_path, monkeypatch) -
     backend = FakeSearchBackend(hits=[PARIS_HIT])
     monkeypatch.setattr(
         "jarvis.brain.engine.generate_llm_reply",
-        AsyncMock(return_value=LLMResult("Good to connect. I'm ready when you are.", "t", "m", 1)),
+        AsyncMock(return_value=LLMResult("Paris is the capital of France.", "t", "m", 1)),
     )
     engine = _engine(tmp_path, "noauto")
     engine.search_backend = backend
@@ -337,6 +337,7 @@ async def test_no_auto_retrieve_without_explicit_search(tmp_path, monkeypatch) -
     assert response.tool_calls == []
     assert backend.calls == []
     assert response.deliberation["response_commit"] != "committed"
+    assert QUALIFY_NOTE in response.reply
 
 
 @pytest.mark.asyncio
