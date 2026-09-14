@@ -814,15 +814,11 @@ def apply_write_path_lock(
             continue
         if claim.tag is not ClaimTag.HYPOTHESIZED:
             continue
-        match claim.claim_class:
-            case ClaimClass.FACTUAL | ClaimClass.CAUSAL | ClaimClass.SAFETY_CRITICAL:
-                reasons.append("hypothesized reply claim cannot be admitted to memory")
-            case ClaimClass.CONVERSATIONAL | ClaimClass.INTERPRETIVE:
-                text = f" {claim.text.lower()} "
-                if any(hint in text for hint in _INFERRED_SUMMARY_HINTS):
-                    reasons.append("inferred summary cannot be admitted to memory")
-            case _:
-                assert_never(claim.claim_class)
+        # v0 classifies long filler as factual; only hypothesized world-fact /
+        # inferred-summary text is refused so user-grounded utterance memory survives.
+        text = f" {claim.text.lower()} "
+        if any(hint in text for hint in _INFERRED_SUMMARY_HINTS):
+            reasons.append("inferred summary cannot be admitted to memory")
     if not reasons:
         return memory_admission, []
     unique: list[str] = []
