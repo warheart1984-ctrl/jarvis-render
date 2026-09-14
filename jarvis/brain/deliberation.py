@@ -47,7 +47,20 @@ DOS_LITE_LABEL = (
 _SUMMARY_LIMIT = 240
 _CLAIM_LIMIT = 16
 _HYPOTHETICAL_HINTS = ("what if", "suppose", "imagine", "hypothetically")
-_HISTORY_PHRASES = ("you said", "your request", "you asked")
+_RESTATEMENT_GLUE = (
+    "you said",
+    "your request",
+    "you asked",
+    "you wanted",
+    "as you requested",
+    "as requested",
+)
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|no|none|neither|nor|without|cannot|can'?t|don'?t|doesn'?t|"
+    r"didn'?t|isn'?t|aren'?t|wasn'?t|weren'?t|won'?t|wouldn'?t|shouldn'?t|"
+    r"couldn'?t|false|deny|denies|denied)\b",
+    re.IGNORECASE,
+)
 _CONTENT_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOPWORDS = frozenset(
     {
@@ -284,7 +297,7 @@ class WaiverRecord(BaseModel):
 
 
 class ReplyCoverage(BaseModel):
-    """Whether every committed-reply sentence was tagged. v0 accounting, not NLI."""
+    """Whether every committed-reply unit was tagged. v0 gate input, not NLI."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -514,19 +527,21 @@ def tag_claims(
             )
         )
 
-    reply_sentences = _reply_sentences(reply)
+    reply_units = _coverage_units(reply)
     uncovered: list[str] = []
     tagged_reply = 0
-    for index, sentence in enumerate(reply_sentences):
+    for index, unit in enumerate(reply_units):
         if len(claims) >= _CLAIM_LIMIT:
-            uncovered.append(_clip(sentence))
+            uncovered.append(_clip(unit))
             continue
-        linked = _match_evidence(sentence, evidence, utterance=message)
+        claim_id = f"claim-reply-{index}"
+        claim_class = classify_claim_class(claim_id=claim_id, text=unit)
+        linked = _match_evidence(unit, evidence, utterance=message, claim_class=claim_class)
         tag = ClaimTag.HYPOTHESIZED if not linked else ClaimTag.OBSERVED
         claims.append(
             ClaimRecord(
-                claim_id=f"claim-reply-{index}",
-                text=_clip(sentence),
+                claim_id=claim_id,
+                text=_clip(unit),
                 tag=tag,
                 evidence_ids=linked,
                 unsupported=not linked,
@@ -535,7 +550,7 @@ def tag_claims(
         tagged_reply += 1
 
     coverage = ReplyCoverage(
-        sentence_count=len(reply_sentences),
+        sentence_count=len(reply_units),
         tagged_count=tagged_reply,
         uncovered=uncovered[:8],
         complete=not uncovered,
@@ -707,6 +722,32 @@ def resolve_claim_gate(
     return resolution, reasons, response, memory
 
 
+def apply_coverage_gate(
+    coverage: ReplyCoverage,
+    resolution: ChallengeAction,
+    response_commit: Literal["committed", "qualified", "revised", "refused"],
+    memory_admission: Literal["eligible", "held", "blocked"],
+) -> tuple[
+    ChallengeAction,
+    list[str],
+    Literal["committed", "qualified", "revised", "refused"],
+    Literal["eligible", "held", "blocked"],
+]:
+    """Unchecked reply text is a gate, not a dashboard. v0 heuristic, not NLI."""
+
+    if coverage.complete:
+        return resolution, [], response_commit, memory_admission
+    extra = ["unchecked reply text cannot be a fully committed answer"]
+    if any(
+        classify_claim_class(claim_id="claim-uncovered", text=text) is ClaimClass.SAFETY_CRITICAL
+        for text in coverage.uncovered
+    ):
+        return ChallengeAction.BLOCK, extra, "refused", "blocked"
+    if response_commit == "committed":
+        return _stronger_action(resolution, ChallengeAction.QUALIFY), extra, "qualified", memory_admission
+    return resolution, extra, response_commit, memory_admission
+
+
 def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list[ClaimRecord]) -> str:
     match resolution:
         case (
@@ -751,8 +792,23 @@ def _hedge_substantive(reply: str, claims: list[ClaimRecord]) -> str:
 def _reply_sentences(reply: str) -> list[str]:
     """Split the committed reply so coverage is not limited to keyword-matching clauses."""
 
-    parts = [_clip(part) for part in re.split(r"[.!?]+", reply or "")]
+    parts = [" ".join(part.split()) for part in re.split(r"[.!?]+", reply or "")]
     return [part for part in parts if part]
+
+
+def _coverage_units(reply: str) -> list[str]:
+    """Sentence-split, then 240-char windows so a long tail cannot skip Challenge."""
+
+    units: list[str] = []
+    for sentence in _reply_sentences(reply):
+        if len(sentence) <= _SUMMARY_LIMIT:
+            units.append(sentence)
+            continue
+        for start in range(0, len(sentence), _SUMMARY_LIMIT):
+            chunk = sentence[start : start + _SUMMARY_LIMIT]
+            if chunk:
+                units.append(chunk)
+    return units
 
 
 def _content_tokens(text: str) -> set[str]:
@@ -770,35 +826,87 @@ def _token_overlap(left: str, right: str) -> int:
     return len(_content_tokens(left) & _content_tokens(right))
 
 
-def _match_evidence(sentence: str, evidence: list[EvidenceRef], *, utterance: str = "") -> list[str]:
-    """v0 linker: source tokens, restatement phrases, or content-token overlap with admitted evidence.
+def _strip_restatement_glue(text: str) -> str:
+    lowered = (text or "").lower()
+    for phrase in _RESTATEMENT_GLUE:
+        lowered = lowered.replace(phrase, " ")
+    return lowered
 
-    Not NLI. A restatement of the current user utterance can link to history without
-    saying "your request". A reply that uses the same content words as a memory
-    summary can link without naming the memory_id.
+
+def _has_negation(text: str) -> bool:
+    return bool(_NEGATION_RE.search(text or ""))
+
+
+def _polarities_conflict(claim: str, evidence: str) -> bool:
+    return _has_negation(claim) != _has_negation(evidence)
+
+
+def _is_primarily_restatement(sentence: str, utterance: str) -> bool:
+    """True when most content tokens are already in the user request. Not NLI."""
+
+    body = _strip_restatement_glue(sentence)
+    claim_tokens = _content_tokens(body)
+    utter_tokens = _content_tokens(utterance)
+    shared = claim_tokens & utter_tokens
+    if len(shared) < 2:
+        return False
+    extra = claim_tokens - utter_tokens
+    return len(extra) <= len(shared)
+
+
+def _utterance_may_justify(claim_class: ClaimClass, sentence: str, utterance: str) -> bool:
+    match claim_class:
+        case ClaimClass.CONVERSATIONAL | ClaimClass.INTERPRETIVE:
+            return True
+        case ClaimClass.FACTUAL:
+            return _is_primarily_restatement(sentence, utterance)
+        case ClaimClass.CAUSAL | ClaimClass.SAFETY_CRITICAL:
+            return False
+        case _:
+            assert_never(claim_class)
+
+
+def _current_utterance_item(item: EvidenceRef) -> bool:
+    return item.evidence_id == "hist-current-utterance" or (
+        item.kind is EvidenceKind.HISTORY and item.source == "user_message"
+    )
+
+
+def _match_evidence(
+    sentence: str,
+    evidence: list[EvidenceRef],
+    *,
+    utterance: str = "",
+    claim_class: ClaimClass = ClaimClass.INTERPRETIVE,
+) -> list[str]:
+    """v0 linker: content-token overlap with admitted evidence, same polarity.
+
+    Not NLI. Restatement glue ("you asked") is not support. Overlap with a source
+    that negates the assertion is not support. Matching the current user request
+    does not by itself justify a factual/causal/safety claim.
     """
 
-    lower = sentence.lower()
-    sentence_tokens = _content_tokens(sentence)
+    body = _strip_restatement_glue(sentence)
     linked: list[str] = []
     for item in evidence:
         if item.kind is EvidenceKind.HYPOTHESIZED_NONE:
             continue
         if item.evidence_id in linked:
             continue
-        token = (item.memory_id or item.source or item.kind.value).lower()
-        matched = bool(token and token in lower)
-        if not matched and item.kind is EvidenceKind.HISTORY and any(phrase in lower for phrase in _HISTORY_PHRASES):
-            matched = True
         corpus = item.match_text or item.summary
-        if not matched and _token_overlap(sentence, corpus) >= 2:
+        if _polarities_conflict(body, corpus):
+            continue
+        if _current_utterance_item(item) and not _utterance_may_justify(claim_class, sentence, utterance or corpus):
+            continue
+        token = (item.memory_id or item.source or item.kind.value).lower()
+        matched = bool(token and token in body)
+        if not matched and _token_overlap(body, corpus) >= 2:
             matched = True
         if (
             not matched
-            and item.kind is EvidenceKind.HISTORY
-            and item.evidence_id == "hist-current-utterance"
+            and _current_utterance_item(item)
             and utterance
-            and len(sentence_tokens & _content_tokens(utterance)) >= 2
+            and len(_content_tokens(body) & _content_tokens(utterance)) >= 2
         ):
             matched = True
         if matched:
@@ -1036,8 +1144,11 @@ class DeliberationRunner:
         self.warnings = warnings
         self.reply_coverage = coverage
         resolution, reasons, response_commit, memory_admission = resolve_claim_gate(self.claims, self.challenge_action)
+        resolution, coverage_reasons, response_commit, memory_admission = apply_coverage_gate(
+            coverage, resolution, response_commit, memory_admission
+        )
         self.challenge_action = resolution
-        for reason in reasons:
+        for reason in reasons + coverage_reasons:
             if reason not in self.challenge_reasons:
                 self.challenge_reasons.append(reason)
         self.response_commit = response_commit

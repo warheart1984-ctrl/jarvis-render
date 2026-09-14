@@ -29,7 +29,9 @@ v0 implements the first ring, plus a v0 **claim-class gate** on Challenge:
    Hypothesized, plus unsupported warnings). A claim is an inspectable
    `{text, tag, claim_class, support, severity, action, evidence_ids}` object.
    The v0 matcher may link a claim to already-admitted history or memory
-   evidence by content-token overlap. It does not entail the claim.
+   evidence by content-token overlap of the same polarity. Restatement glue
+   (“you asked”) is not support, and overlap with a source that negates the
+   assertion is not support. Matching is not justification.
 3. **External outputs contribute evidence and cannot establish authority.**
    Tool / RAG / other-agent / `request.context` text is admitted with
    `authority=false`. The runner ignores a requested authority flag.
@@ -76,9 +78,11 @@ refs, then refuses `Commit` when a hard rule fails:
    matcher (not NLI): a restatement of the current utterance can count as
    history evidence without saying “your request”, and a reply that shares
    content words with a memory summary can count without naming `memory_id`.
-   Whole-answer coverage records every committed-reply sentence as a claim
-   (or lists it uncovered if the claim budget is exhausted). That is
-   accounting, not proof the hosted model used the citation.
+   Restatement glue and overlap with a negated source do not count as
+   support. Whole-answer coverage is a gate: every reply sentence (and each
+   240-character window of a longer sentence) must be tagged, or the turn
+   cannot `response_commit=committed`. Unchecked text is listed uncovered.
+   That is still not proof the hosted model used the citation.
 
 Challenge can force clarification, abstain, fail-closed, qualify, downgrade,
 revise, or block. Conversational unsupported claims do not block a turn.
