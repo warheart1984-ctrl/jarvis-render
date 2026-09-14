@@ -111,8 +111,38 @@ the reply exists (Evaluate + Commit). The public envelope is stored on:
 Continuity Ledger writes stay gated/disabled unless already enabled. Public
 traces omit secrets, hidden prompts, and private reasoning.
 
+## Observe-only web search (v0)
+
+The first kit tool is **web search in observe-only mode**. It runs only when the
+user explicitly asks to search (`search for`, `web search`, `look up`, …) or
+sends a gated `search_query` on `POST /chat`. Jarvis does **not** auto-retrieve
+for every question.
+
+Hits enter the deliberation corpus as `tool_external` evidence through the
+existing Voss admission path (`authority=false`). Retrieved text is quoted on
+the user channel as untrusted evidence. It is never concatenated into
+system/governance prompts as instructions, never treated as a command, never
+able to change governance state, and never extracted into memory or
+preferences. There is no approval path yet; search remains draft/evidence.
+
+Bounds: at most five sources, 240-character excerpts, timeouts, two attempts,
+and a per-tenant/session rate limit. Public traces keep URL, retrieval time,
+content hash, bounded excerpt, and trust status `untrusted_external`. They omit
+secrets, full pages, chain-of-thought, and `match_text`.
+
+If no search API key is configured, the adapter degrades (`unavailable`) the
+same way inference degrades: it is **not** mapped onto governance fail-closed.
+A deterministic `fake` backend exists for tests. Calculator, clock, weather,
+document retrieval, and health are named stubs on the same tool-call envelope.
+This is not unrestricted browse, not RAG, not OTEM, and not NLI.
+
+Claims that use retrieved evidence must cite a search receipt. Unsupported
+factual/safety assertions still follow the live-path claim-class teeth
+(qualify / block). External text remains evidence, never authority.
+
 ## Validation
 
 ```sh
-poetry run pytest tests/test_deliberation.py -v
+poetry run pytest tests/test_deliberation.py tests/test_web_search.py -v
 ```
+

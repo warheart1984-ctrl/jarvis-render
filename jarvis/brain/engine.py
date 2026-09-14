@@ -31,6 +31,12 @@ from jarvis.brain.memory import (
 from jarvis.brain.provenance import context_receipt, memory_reference
 from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
+from jarvis.brain.tools import (
+    evidence_from_search_hit,
+    maybe_web_search,
+    quoted_search_payload,
+    search_citation,
+)
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.models.jarvis_types import (
@@ -89,6 +95,7 @@ class JarvisEngine:
             if settings.infinity_enabled and settings.infinity_api_base
             else None
         )
+        self.search_backend = None
 
     def for_principal(self, principal: Principal) -> JarvisEngine:
         scope = principal.tenant_id, principal.subject
@@ -239,6 +246,30 @@ class JarvisEngine:
                 m for m in state.long_term_memory if m.user_id == state.user_id and m.session_id == state.session_id
             ]
             runner = DeliberationRunner()
+            turn_id = uuid4().hex
+            correlation_id = uuid4().hex
+            # Observe-only search: explicit request only. Failure degrades; it is not fail-closed.
+            search_record = await maybe_web_search(
+                message=request.message,
+                search_query=request.search_query,
+                session_id=state.session_id,
+                tenant_id=self.store.tenant_id,
+                owner_sub=self.store.owner_sub,
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
+                quota=self.access.consume_quota,
+                backend=self.search_backend,
+            )
+            if search_record is not None:
+                self.audit.append(
+                    uuid4().hex,
+                    state.session_id,
+                    "tool_call",
+                    search_record.to_public_dict(),
+                    turn_id=turn_id,
+                )
+                for hit in search_record.sources:
+                    runner.add_evidence(evidence_from_search_hit(hit))
             runner.observe(
                 message=request.message,
                 session_id=state.session_id,
@@ -278,8 +309,6 @@ class JarvisEngine:
             if forced_reply and decision != "fail_closed":
                 local_reply = forced_reply
                 reasoning_trace.append(f"dos-lite challenge forced {runner.challenge_action.value}")
-            turn_id = uuid4().hex
-            correlation_id = uuid4().hex
 
             def audit_attempt(entry: dict[str, Any]) -> None:
                 self.audit.append(uuid4().hex, state.session_id, "inference_attempt", entry, turn_id=turn_id)
@@ -292,6 +321,12 @@ class JarvisEngine:
                     if recall_owner
                     else RecallResult({"status": "not_authorized"})
                 )
+            search_quotes = quoted_search_payload(search_record.sources) if search_record else None
+            search_citations = (
+                [search_citation(item, session_id=state.session_id) for item in search_record.sources]
+                if search_record
+                else None
+            )
             messages, runtime_context = build_chat_context(
                 state,
                 request,
@@ -300,6 +335,9 @@ class JarvisEngine:
                 continuity_configured=self.continuity is not None,
                 speech_configured=bool(settings.nvidia_api_key),
                 previous=previous,
+                search_quotes=search_quotes or None,
+                search_citations=search_citations or None,
+                search_status=search_record.status.value if search_record else "not_requested",
             )
             if request.recall_previous:
                 self.audit.append(
@@ -378,6 +416,7 @@ class JarvisEngine:
             for message in state.conversation_history[-2:]:
                 message["turn_id"] = turn_id
 
+            # Observe-only: retrieved search text is never an extract_memory or preference input.
             memory_entry = (
                 extract_memory(state, request.message, reply)
                 if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible"
@@ -404,6 +443,10 @@ class JarvisEngine:
                     {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
                     {"type": "runtime_context", **runtime_context},
                     {"type": "deliberation", "version": "v0-dos-lite", "trace": public_deliberation},
+                    {
+                        "type": "tool_calls",
+                        "calls": [search_record.to_public_dict()] if search_record else [],
+                    },
                 ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
@@ -446,6 +489,7 @@ class JarvisEngine:
                         "runtime_context": runtime_context,
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
                         "deliberation": public_deliberation,
+                        "tool_calls": [search_record.to_public_dict()] if search_record else [],
                     },
                 },
                 {
@@ -524,6 +568,7 @@ class JarvisEngine:
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
                 lock_reason=self.lock_reason(state.session_id),
+                tool_calls=[search_record.to_public_dict()] if search_record else [],
                 deliberation=public_deliberation,
             )
 
