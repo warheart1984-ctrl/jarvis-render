@@ -10,7 +10,7 @@ from jarvis.core.config import settings
 from jarvis.models.jarvis_types import JarvisState
 
 
-def inspect_session(engine: Any, state: JarvisState) -> dict[str, Any]:
+def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "session_id": state.session_id,
         "status": "available",
@@ -89,9 +89,9 @@ def inspect_session(engine: Any, state: JarvisState) -> dict[str, Any]:
     # Do not fetch a different/opted-out conversation simply to populate the panel.
     last = next(reversed(payloads.values()), {})
     used = last.get("runtime_context", {}).get("previous_session", {})
-    if used.get("status") == "verified" and state.user_id == settings.recall_owner_user_id:
+    if used.get("status") == "verified" and (recall_key or state.user_id == settings.recall_owner_user_id):
         previous = engine.recall.previous(
-            state.user_id, settings.service_token, session_id=state.session_id, before=state.created_at
+            state.user_id, recall_key or settings.service_token, session_id=state.session_id, before=state.created_at
         )
         result["previous_session"] = previous.metadata
         if (

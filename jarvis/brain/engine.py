@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from jarvis.auth import AccessStore, Principal
+
 from jarvis.brain.context import build_chat_context
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
@@ -51,9 +53,11 @@ class JarvisEngine:
         self._session_locks: dict[str, asyncio.Lock] = {}
         self.spiral = spiral_client or SpiralClient()
         self.store = store or JarvisStore(settings.memory_db_path)
-        self.audit = AuditLedger(self.store.path)
-        self.reviver = ReviverLedger(self.store.path)
-        self.recall = RecallLedger(self.store.path)
+        self.access = AccessStore(self.store.path)
+        self.audit = AuditLedger(self.store.path, *self.store.scope)
+        self.reviver = ReviverLedger(self.store.path, *self.store.scope)
+        self.recall = RecallLedger(self.store.path, *self.store.scope)
+        self._tenant_engines: dict[tuple[str, str], JarvisEngine] = {}
         self._read_only_sessions: set[str] = set()
         self.continuity = (
             ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token)
@@ -65,6 +69,19 @@ class JarvisEngine:
             if settings.infinity_enabled and settings.infinity_api_base
             else None
         )
+
+    def for_principal(self, principal: Principal) -> JarvisEngine:
+        scope = principal.tenant_id, principal.subject
+        if scope not in self._tenant_engines:
+            child = JarvisEngine(store=JarvisStore(self.store.path, *scope))
+            child.infinity = None
+            self._tenant_engines[scope] = child
+        child = self._tenant_engines[scope]
+        if settings.continuity_ledger_url and "memory.write" in principal.scopes and principal.ledger_token:
+            child.continuity = ContinuityLedgerClient(settings.continuity_ledger_url, principal.ledger_token)
+        else:
+            child.continuity = None
+        return child
 
     # ------------------------------------------------------------------
     # Session management
@@ -121,7 +138,9 @@ class JarvisEngine:
     # Main conversation loop
     # ------------------------------------------------------------------
 
-    async def chat(self, request: ChatRequest, *, recall_owner: str | None = None) -> ChatResponse:
+    async def chat(
+        self, request: ChatRequest, *, recall_owner: str | None = None, principal: Principal | None = None
+    ) -> ChatResponse:
         """Process a user message through the six-step turn pipeline.
 
         Steps:
@@ -135,7 +154,17 @@ class JarvisEngine:
 
         # This optional principal comes from token verification in the server route,
         # never from request.context or another client-supplied field.
-        if recall_owner is not None and (
+        recall_key = settings.service_token
+        if principal is not None:
+            if (
+                not settings.oauth_enabled() or not settings.recall_signing_key
+                or request.user_id != principal.user_id
+                or not self.access.owns(principal, request.session_id or "")
+                or self.store.scope != (principal.tenant_id, principal.subject)
+            ):
+                raise ValueError("Visitor ownership check failed")
+            recall_owner, recall_key = principal.user_id, principal.recall_key()
+        elif recall_owner is not None and (
             not settings.service_token
             or recall_owner != settings.recall_owner_user_id
             or recall_owner != request.user_id
@@ -196,7 +225,7 @@ class JarvisEngine:
             if request.recall_previous:
                 previous = (
                     self.recall.previous(
-                        recall_owner, settings.service_token, session_id=state.session_id, before=state.created_at
+                        recall_owner, recall_key, session_id=state.session_id, before=state.created_at
                     )
                     if recall_owner
                     else RecallResult({"status": "not_authorized"})
@@ -350,7 +379,7 @@ class JarvisEngine:
                     self.recall.attest(
                         state.session_id,
                         recall_owner,
-                        settings.service_token,
+                        recall_key,
                         expected_state=state.model_dump(mode="json"),
                     )
                 except Exception:
@@ -472,7 +501,7 @@ class JarvisEngine:
     async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
         """Optionally push state to the Spiral Intelligence backend."""
 
-        if not settings.governed_writes_allowed():
+        if not settings.governed_writes_allowed() or self.store.tenant_id != "t_jon":
             return "skipped_writes_disabled"
 
         try:

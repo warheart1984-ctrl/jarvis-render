@@ -8,10 +8,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from jarvis.persistence.tenancy import LEGACY_SUBJECT, LEGACY_TENANT, ScopedLedger, migrate_scope
 
-class JarvisStore:
-    def __init__(self, path: str | Path = "jarvis.sqlite3") -> None:
-        self.path = str(path)
+
+class JarvisStore(ScopedLedger):
+    def __init__(self, path: str | Path = "jarvis.sqlite3", tenant_id: str = LEGACY_TENANT,
+                 owner_sub: str = LEGACY_SUBJECT) -> None:
+        super().__init__(str(path), tenant_id, owner_sub)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as db:
             db.executescript(
@@ -42,6 +45,8 @@ class JarvisStore:
                 except sqlite3.OperationalError as exc:
                     if "duplicate column" not in str(exc).lower():
                         raise
+            for table in ("sessions", "spiral_turns", "memories"):
+                migrate_scope(db, table)
 
     @staticmethod
     def content_hash(content: str) -> str:
@@ -50,7 +55,7 @@ class JarvisStore:
     def save_turn(self, turn: Any) -> None:
         with sqlite3.connect(self.path) as db:
             db.execute(
-                "INSERT INTO spiral_turns (turn_id,session_id,timestamp,decision,uncertainty,stress,fail_closed_reason,content_sha256,content,evidence_json,provider,model,cost_usd,latency_ms,backend_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",  # noqa: E501
+                "INSERT INTO spiral_turns (turn_id,session_id,timestamp,decision,uncertainty,stress,fail_closed_reason,content_sha256,content,evidence_json,provider,model,cost_usd,latency_ms,backend_status,tenant_id,owner_sub) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",  # noqa: E501
                 (
                     turn.turn_id,
                     turn.session_id,
@@ -67,14 +72,17 @@ class JarvisStore:
                     turn.cost_usd,
                     turn.latency_ms,
                     turn.backend_status,
+                    *self.scope,
                 ),
             )
 
     def save_turn_bundle(self, turn: Any, audit_event: dict[str, Any], memory: dict[str, Any] | None = None) -> None:
         """Atomically persist a turn, its audit event, and optional memory."""
         with sqlite3.connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
             previous = db.execute(
-                "SELECT event_hash FROM audit_events WHERE session_id=? ORDER BY rowid DESC LIMIT 1", (turn.session_id,)
+                "SELECT event_hash FROM audit_events WHERE session_id=? AND tenant_id=? AND owner_sub=? "
+                "ORDER BY rowid DESC LIMIT 1", (turn.session_id, *self.scope)
             ).fetchone()
             previous_hash = previous[0] if previous else "GENESIS"
             payload_json = json.dumps(audit_event["payload"], sort_keys=True)
@@ -87,13 +95,15 @@ class JarvisStore:
                     "timestamp": audit_event["timestamp"],
                     "payload": audit_event["payload"],
                     "previous_hash": previous_hash,
+                    "tenant_id": self.tenant_id,
+                    "owner_sub": self.owner_sub,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
             )
             event_hash = hashlib.sha256(body.encode()).hexdigest()
             db.execute(
-                "INSERT INTO spiral_turns (turn_id,session_id,timestamp,decision,uncertainty,stress,fail_closed_reason,content_sha256,content,evidence_json,provider,model,cost_usd,latency_ms,backend_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",  # noqa: E501
+                "INSERT INTO spiral_turns (turn_id,session_id,timestamp,decision,uncertainty,stress,fail_closed_reason,content_sha256,content,evidence_json,provider,model,cost_usd,latency_ms,backend_status,tenant_id,owner_sub) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",  # noqa: E501
                 (
                     turn.turn_id,
                     turn.session_id,
@@ -110,10 +120,11 @@ class JarvisStore:
                     turn.cost_usd,
                     turn.latency_ms,
                     turn.backend_status,
+                    *self.scope,
                 ),
             )
             db.execute(
-                "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO audit_events VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     audit_event["event_id"],
                     turn.turn_id,
@@ -123,12 +134,13 @@ class JarvisStore:
                     payload_json,
                     previous_hash,
                     event_hash,
-                    1,
+                    2,
+                    *self.scope,
                 ),
             )
             if memory:
                 db.execute(
-                    "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         memory["id"],
                         memory["session_id"],
@@ -140,6 +152,7 @@ class JarvisStore:
                         memory.get("subject", ""),
                         self.content_hash(memory["content"]),
                         memory["created_at"],
+                        *self.scope,
                     ),
                 )
 
@@ -147,14 +160,15 @@ class JarvisStore:
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute(
-                "SELECT * FROM spiral_turns WHERE session_id=? ORDER BY timestamp DESC LIMIT ?", (session_id, limit)
+                "SELECT * FROM spiral_turns WHERE session_id=? AND tenant_id=? AND owner_sub=? "
+                "ORDER BY timestamp DESC LIMIT ?", (session_id, *self.scope, limit)
             ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
     def save_memory(self, memory: dict[str, Any]) -> None:
         with sqlite3.connect(self.path) as db:
             db.execute(
-                "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     memory["id"],
                     memory["session_id"],
@@ -166,6 +180,7 @@ class JarvisStore:
                     memory.get("subject", ""),
                     self.content_hash(memory["content"]),
                     memory["created_at"],
+                    *self.scope,
                 ),
             )
 
@@ -173,7 +188,8 @@ class JarvisStore:
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute(
-                "SELECT * FROM memories WHERE session_id=? AND status='active' ORDER BY created_at DESC", (session_id,)
+                "SELECT * FROM memories WHERE session_id=? AND tenant_id=? AND owner_sub=? "
+                "AND status='active' ORDER BY created_at DESC", (session_id, *self.scope)
             ).fetchall()
         terms = query.lower().split()
         return [dict(r) for r in rows if not terms or any(t in r["content"].lower() for t in terms)]
@@ -182,5 +198,6 @@ class JarvisStore:
         """Read draft/legacy rows; callers must enforce ownership and integrity."""
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
-            rows = db.execute("SELECT * FROM memories WHERE session_id=? ORDER BY created_at DESC", (session_id,))
+            rows = db.execute("SELECT * FROM memories WHERE session_id=? AND tenant_id=? AND owner_sub=? "
+                              "ORDER BY created_at DESC", (session_id, *self.scope))
             return [dict(row) for row in rows]
