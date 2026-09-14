@@ -59,14 +59,13 @@ Simulate) → Evaluate → Commit. It is a rule list that raises the honesty of 
 turn, not Project Finish's full DOS Kernel.
 
 The useful part is the **Infer → Challenge/Simulate → Commit barrier** plus
-CRS claim types, enforced in code rather than in the system prompt. Hard
-rules: no Commit without an evidence reference (memory, history, tool/external
-suggestion, or explicit `none — hypothesized`); Infer cannot reach Commit
-without Challenge, Simulate, or a recorded waiver; external / tool / RAG /
-other-agent text is evidence, never authority; replies carry CRS-style
-Observed / Specified / Hypothesized tags plus unsupported-claim warnings.
-Compare, Reflect, CER replay, and OTEM-governed continuity writes are **not**
-this release. See [DOS-lite deliberation](docs/DELIBERATION.md).
+CRS claim types and a v0 claim-class gate, enforced in code rather than in
+the system prompt. Hard rules: no Commit without an evidence reference;
+Infer cannot reach Commit without Challenge, Simulate, or a recorded waiver;
+external text is evidence, never authority. Challenge can qualify, downgrade,
+revise, or block by claim class. Response commit and memory admission are
+separate. Compare, Reflect, CER replay, and OTEM-governed continuity writes
+are **not** this release. See [DOS-lite deliberation](docs/DELIBERATION.md).
 
 ## Architecture
 

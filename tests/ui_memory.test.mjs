@@ -41,10 +41,11 @@ test("stored content and artifact references are rendered as text only", () => {
 test("DOS-lite claim tags render as text and do not oversell a kernel", () => {
   const view = deliberationView({
     label: "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel",
-    status: "committed", committed: true, challenge_action: "continue",
+    status: "committed", committed: true, challenge_action: "downgrade",
+    response_commit: "committed", memory_admission: "held",
     stages: [{name: "observe"}, {name: "infer"}, {name: "challenge"}, {name: "commit"}],
-    claims: [{tag: "observed", text: "User utterance observed", unsupported: false},
-      {tag: "hypothesized", text: '<img src=x onerror="evil()">', unsupported: true}],
+    claims: [{tag: "observed", claim_class: "factual", support: "present", severity: "harmless", action: "continue", text: "User utterance observed", unsupported: false},
+      {tag: "hypothesized", claim_class: "causal", support: "missing", severity: "meaningful", action: "revise", text: '<img src=x onerror="evil()">', unsupported: true}],
     unsupported_claim_warnings: ["unsupported claim (hypothesized): emotion label"]
   });
   const text = allText(view);
@@ -52,6 +53,8 @@ test("DOS-lite claim tags render as text and do not oversell a kernel", () => {
   assert.match(text, /observe → infer → challenge → commit/);
   assert.match(text, /not a full DOS Kernel/);
   assert.match(text, /HYPOTHESIZED/);
+  assert.match(text, /causal/);
+  assert.match(text, /Memory admission/);
   assert.match(text, /<img/);
   assert.match(text, /unsupported claim/);
   assert.equal(deliberationSummary({}), "not run");

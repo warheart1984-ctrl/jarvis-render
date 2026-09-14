@@ -88,6 +88,8 @@ class ChatResponse(BaseModel):
             "waivers": [],
             "committed": False,
             "blocked_reason": None,
+            "response_commit": "committed",
+            "memory_admission": "eligible",
         }
     )
 

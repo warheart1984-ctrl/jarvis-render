@@ -339,6 +339,13 @@ class JarvisEngine:
             runtime_context["context_receipt"] = receipt
             try:
                 runner.evaluate(reply)
+                if runner.gated_reply:
+                    reply = runner.gated_reply
+                if runner.challenge_action is not None:
+                    decision = map_challenge_decision(runner.challenge_action, decision)
+                if runner.response_commit == "refused" and decision == "answer":
+                    decision = "fail_closed"
+                    reasons.append("safety-critical claim lacked verification")
                 deliberation = runner.commit()
             except DeliberationBlocked as exc:
                 reasons.append(str(exc))
@@ -353,13 +360,13 @@ class JarvisEngine:
 
             memory_entry = (
                 extract_memory(state, request.message, reply)
-                if request.memory_consent and decision == "answer"
+                if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible"
                 else None
             )
             if memory_entry:
                 state.long_term_memory = add_long_term_memory(state, memory_entry)
 
-            if request.memory_consent and decision == "answer":
+            if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible":
                 state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
             turn = SpiralTurn(

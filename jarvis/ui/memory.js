@@ -63,7 +63,9 @@ export function deliberationView(deliberation) {
     || "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel, trained judge, or private chain-of-thought engine", "hint"));
   if (deliberation?.challenge_action) {
     detail.append(fields([
-      ["Challenge", deliberation.challenge_action],
+            ["Challenge", deliberation.challenge_action],
+      ["Response commit", deliberation.response_commit || (deliberation.committed ? "committed" : "refused")],
+      ["Memory admission", deliberation.memory_admission || "not recorded"],
       ["Committed", deliberation.committed ? "yes" : "no"],
       ["Status", deliberation.status || "not_run"],
     ]));
@@ -73,7 +75,10 @@ export function deliberationView(deliberation) {
     const list = element("ol", undefined, "citation-list claim-list");
     for (const claim of claims) {
       const item = element("li");
-      item.append(element("p", `${(claim.tag || "hypothesized").toUpperCase()} · ${claim.text || ""}`));
+      item.append(element("p", `${(claim.tag || "hypothesized").toUpperCase()} · ${(claim.claim_class || "interpretive")} · ${claim.text || ""}`));
+      if (claim.support || claim.action) {
+        item.append(element("p", `support=${claim.support || "missing"} · severity=${claim.severity || "harmless"} · action=${claim.action || "continue"}`, "hint"));
+      }
       if (claim.unsupported) item.append(element("p", "Unsupported: no evidence reference for this claim.", "hint"));
       list.append(item);
     }
