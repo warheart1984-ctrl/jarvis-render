@@ -119,6 +119,10 @@ class JarvisSettings(BaseSettings):
     search_attempts: int = Field(default=2, ge=1, le=2)
     search_max_results: int = Field(default=5, ge=1, le=5)
     search_max_excerpt_chars: int = Field(default=240, ge=40, le=240)
+    search_max_bytes: int = Field(default=2048, ge=256, le=16384)
+    search_max_response_bytes: int = Field(default=65536, ge=1024, le=262144)
+    search_allow_hosts: str = ""
+    search_deny_hosts: str = "localhost,127.0.0.1,::1,0.0.0.0"
     search_rate_limit: int = Field(default=8, ge=1, le=60)
     search_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
 

@@ -33,6 +33,7 @@ from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
 from jarvis.brain.tools import (
     evidence_from_search_hit,
+    may_admit_retrieved_to_memory,
     maybe_web_search,
     quoted_search_payload,
     search_citation,
@@ -321,7 +322,9 @@ class JarvisEngine:
                     if recall_owner
                     else RecallResult({"status": "not_authorized"})
                 )
-            search_quotes = quoted_search_payload(search_record.sources) if search_record else None
+            search_quotes = (
+                quoted_search_payload(search_record.sources) if search_record and search_record.sources else None
+            )
             search_citations = (
                 [search_citation(item, session_id=state.session_id) for item in search_record.sources]
                 if search_record
@@ -416,12 +419,17 @@ class JarvisEngine:
             for message in state.conversation_history[-2:]:
                 message["turn_id"] = turn_id
 
-            # Observe-only: retrieved search text is never an extract_memory or preference input.
+            snippets = [hit.excerpt for hit in search_record.sources] if search_record else []
             memory_entry = (
                 extract_memory(state, request.message, reply)
                 if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible"
                 else None
             )
+            if memory_entry and snippets and not may_admit_retrieved_to_memory(
+                user_requested=request.memory_consent
+            ):
+                if any(snippet and snippet in memory_entry.content for snippet in snippets):
+                    memory_entry = None
             if memory_entry:
                 state.long_term_memory = add_long_term_memory(state, memory_entry)
 

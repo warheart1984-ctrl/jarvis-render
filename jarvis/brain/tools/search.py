@@ -8,12 +8,12 @@ or a gated ``search_query`` field — not on every question.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
 import time
 from collections.abc import Callable
 from typing import Any, Protocol, assert_never
 from urllib.parse import urlsplit
-from uuid import uuid4
 
 import httpx
 
@@ -23,8 +23,10 @@ from jarvis.brain.tools.envelope import (
     ToolCallRecord,
     ToolCallStatus,
     ToolName,
+    fence_untrusted_data,
     stub_tool_call,
     utc_now,
+    validate_tool_arguments,
 )
 from jarvis.core.config import settings
 from jarvis.governance.hashing import content_hash
@@ -53,12 +55,15 @@ class FakeSearchBackend:
     provider = "fake"
     model = "web-search-v0-fake"
 
-    def __init__(self, hits: list[dict[str, str]] | None = None) -> None:
+    def __init__(self, hits: list[dict[str, str]] | None = None, *, delay_seconds: float = 0) -> None:
         self.hits = hits
+        self.delay_seconds = delay_seconds
         self.calls: list[str] = []
 
     async def search(self, query: str, *, max_results: int) -> list[dict[str, str]]:
         self.calls.append(query)
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
         if self.hits is not None:
             return list(self.hits)[:max_results]
         clipped = query[:80]
@@ -120,8 +125,13 @@ class HttpSearchBackend:
                             "include_answer": False,
                         },
                     )
-                if response.status_code in {401, 403}:
-                    raise SearchUnavailable("search provider refused credentials", retryable=False)
+                if 400 <= response.status_code < 500:
+                    raise SearchUnavailable(
+                        f"search provider returned HTTP {response.status_code}",
+                        retryable=False,
+                    )
+                if len(response.content) > settings.search_max_response_bytes:
+                    raise SearchUnavailable("search provider response exceeded max bytes", retryable=False)
                 if response.status_code != 200:
                     raise SearchUnavailable(
                         f"search provider returned HTTP {response.status_code}",
@@ -130,6 +140,8 @@ class HttpSearchBackend:
                 body = response.json()
         except httpx.TimeoutException as exc:
             raise SearchUnavailable("search provider timed out", retryable=True, status=ToolCallStatus.TIMEOUT) from exc
+        except SearchUnavailable:
+            raise
         except (httpx.HTTPError, ValueError) as exc:
             raise SearchUnavailable("search provider is unavailable or returned invalid JSON", retryable=True) from exc
         if not isinstance(body, dict):
@@ -151,7 +163,7 @@ def _parse_hits(body: dict[str, Any], max_results: int) -> list[dict[str, str]]:
         url = str(row.get("url") or row.get("link") or "")
         title = str(row.get("title") or row.get("name") or "")
         excerpt = str(row.get("content") or row.get("description") or row.get("snippet") or "")
-        if not _public_http_url(url):
+        if not url_permitted(url):
             continue
         hits.append({"url": url[:500], "title": title, "excerpt": excerpt})
         if len(hits) >= max_results:
@@ -159,9 +171,47 @@ def _parse_hits(body: dict[str, Any], max_results: int) -> list[dict[str, str]]:
     return hits
 
 
-def _public_http_url(url: str) -> bool:
+def _split_hosts(value: str) -> list[str]:
+    return [item.strip().lower().lstrip(".") for item in value.split(",") if item.strip()]
+
+
+def _host_matches(host: str, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        if host == pattern or host.endswith("." + pattern):
+            return True
+    return False
+
+
+def _private_or_loopback(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast)
+
+
+def url_permitted(url: str) -> bool:
+    """HTTP(S) only, deny-list wins, optional allow-list, no private/loopback IPs."""
+
     parsed = urlsplit(url)
-    return parsed.scheme in {"http", "https"} and bool(parsed.hostname) and not parsed.username and not parsed.password
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        return False
+    deny = _split_hosts(settings.search_deny_hosts)
+    allow = _split_hosts(settings.search_allow_hosts)
+    if host in {"localhost"} or _private_or_loopback(host) or _host_matches(host, deny):
+        return False
+    if allow and not _host_matches(host, allow):
+        return False
+    return True
+
+
+def _clip_bytes(text: str, max_bytes: int) -> str:
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    clipped = raw[:max_bytes]
+    return clipped.decode("utf-8", errors="ignore")
 
 
 def configured_search_backend() -> SearchBackend:
@@ -197,14 +247,17 @@ def resolve_search_query(message: str, explicit: str | None = None) -> str | Non
 
 
 def receipts_from_hits(hits: list[dict[str, str]], *, retrieved_at: str) -> list[SourceReceipt]:
-    limit = settings.search_max_excerpt_chars
+    char_limit = settings.search_max_excerpt_chars
+    byte_limit = settings.search_max_bytes
     receipts: list[SourceReceipt] = []
     for hit in hits:
         url = hit.get("url") or ""
-        title = (hit.get("title") or "")[:120]
-        excerpt = " ".join((hit.get("excerpt") or "").split())[:limit]
+        if not url_permitted(url):
+            continue
+        title = _clip_bytes((hit.get("title") or "")[:120], byte_limit)
+        excerpt = _clip_bytes(" ".join((hit.get("excerpt") or "").split()), byte_limit)[:char_limit]
         if not excerpt:
-            excerpt = title or url[:limit]
+            excerpt = (title or url)[:char_limit]
         digest = content_hash({"url": url, "excerpt": excerpt, "title": title})
         receipts.append(
             SourceReceipt(
@@ -216,6 +269,8 @@ def receipts_from_hits(hits: list[dict[str, str]], *, retrieved_at: str) -> list
                 title=title,
             )
         )
+        if len(receipts) >= settings.search_max_results:
+            break
     return receipts
 
 
@@ -259,21 +314,28 @@ async def invoke_tool(
     transaction_id: str,
     correlation_id: str,
 ) -> ToolCallRecord:
+    timeout = settings.search_timeout_seconds
+    attempts = settings.search_attempts
     try:
         tool = ToolName(name)
-    except ValueError:
+        validated = validate_tool_arguments(name, arguments)
+    except ValueError as exc:
         return ToolCallRecord(
-            tool_name=name[:80],
-            arguments=arguments,
+            tool_name=(name or "unknown")[:80] or "unknown",
+            arguments=dict(arguments or {}),
             status=ToolCallStatus.INVALID,
             transaction_id=transaction_id,
             correlation_id=correlation_id,
-            error="unknown tool",
+            timeout_seconds=timeout,
+            attempts=attempts,
+            attempt=0,
+            retryable=False,
+            error=str(exc),
         )
     match tool:
         case ToolName.WEB_SEARCH:
             return await run_web_search(
-                query=str(arguments.get("query") or ""),
+                query=str(validated.get("query") or ""),
                 session_id="",
                 tenant_id="",
                 owner_sub="",
@@ -289,7 +351,12 @@ async def invoke_tool(
             | ToolName.HEALTH
         ):
             return stub_tool_call(
-                tool, transaction_id=transaction_id, correlation_id=correlation_id, arguments=arguments
+                tool,
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                arguments=validated,
+                timeout_seconds=timeout,
+                attempts=attempts,
             )
         case _:
             assert_never(tool)
@@ -322,6 +389,19 @@ async def maybe_web_search(
     )
 
 
+def _tool_identity(
+    tool_name: str, arguments: dict[str, Any], transaction_id: str, correlation_id: str
+) -> dict[str, Any]:
+    return {
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "transaction_id": transaction_id,
+        "correlation_id": correlation_id,
+        "timeout_seconds": settings.search_timeout_seconds,
+        "attempts": settings.search_attempts,
+    }
+
+
 async def run_web_search(
     *,
     query: str,
@@ -334,29 +414,25 @@ async def run_web_search(
     backend: SearchBackend | None = None,
 ) -> ToolCallRecord:
     started = time.perf_counter()
-    envelope = {
-        "tool_name": ToolName.WEB_SEARCH,
-        "arguments": {"query": query},
-        "query": query,
-        "transaction_id": transaction_id or uuid4().hex,
-        "correlation_id": correlation_id or uuid4().hex,
-        "observe_only": True,
-        "memory_written": False,
-        "authority": False,
-    }
-    cleaned = query.strip()[:MAX_QUERY]
-    if not cleaned:
+    try:
+        arguments = validate_tool_arguments(ToolName.WEB_SEARCH.value, {"query": query})
+    except ValueError as exc:
         return ToolCallRecord(
-            **envelope,
+            **_tool_identity(ToolName.WEB_SEARCH.value, {"query": query}, transaction_id, correlation_id),
             status=ToolCallStatus.INVALID,
-            error="search query is empty",
+            attempt=0,
+            retryable=False,
+            error=str(exc),
             latency_ms=_latency(started),
         )
+    identity = _tool_identity(ToolName.WEB_SEARCH.value, arguments, transaction_id, correlation_id)
     bucket = f"{tenant_id}:{owner_sub}:{session_id}"
     if session_id and not quota("web_search", bucket, settings.search_rate_limit, settings.search_rate_window_seconds):
         return ToolCallRecord(
-            **envelope,
+            **identity,
             status=ToolCallStatus.RATE_LIMITED,
+            attempt=0,
+            retryable=False,
             provider="internal",
             model="rate-limit",
             error="tenant/session search rate limit reached",
@@ -367,19 +443,25 @@ async def run_web_search(
     timeout = settings.search_timeout_seconds
     last_error = "search unavailable"
     status = ToolCallStatus.UNAVAILABLE
+    retryable = False
     hits: list[dict[str, str]] = []
+    last_attempt = 0
     for attempt in range(1, attempts + 1):
+        last_attempt = attempt
         try:
             async with asyncio.timeout(timeout):
-                hits = await active.search(cleaned, max_results=settings.search_max_results)
+                hits = await active.search(arguments["query"], max_results=settings.search_max_results)
             break
         except TimeoutError:
             last_error = "search timed out"
             status = ToolCallStatus.TIMEOUT
+            retryable = True
             if attempt >= attempts:
                 return ToolCallRecord(
-                    **envelope,
+                    **identity,
                     status=status,
+                    attempt=attempt,
+                    retryable=retryable,
                     provider=getattr(active, "provider", "none"),
                     model=getattr(active, "model", "none"),
                     error=last_error,
@@ -388,32 +470,38 @@ async def run_web_search(
         except SearchUnavailable as exc:
             last_error = str(exc)
             status = exc.status
+            retryable = exc.retryable
             if not exc.retryable or attempt >= attempts:
                 return ToolCallRecord(
-                    **envelope,
+                    **identity,
                     status=status,
+                    attempt=attempt,
+                    retryable=retryable,
                     provider=getattr(active, "provider", "none"),
                     model=getattr(active, "model", "none"),
                     error=last_error,
                     latency_ms=_latency(started),
                 )
-    receipts = receipts_from_hits(hits, retrieved_at=utc_now())[: settings.search_max_results]
+    receipts = receipts_from_hits(hits, retrieved_at=utc_now())
     source_ids = [item.source_id for item in receipts]
     source_hash = content_hash(source_ids) if source_ids else ""
     result_hash = content_hash(
-        {"query": cleaned, "source_ids": source_ids, "hashes": [item.content_hash for item in receipts]}
+        {"query": arguments["query"], "source_ids": source_ids, "hashes": [item.content_hash for item in receipts]}
     )
+    accepted = bool(receipts)
     return ToolCallRecord(
-        **envelope,
-        status=ToolCallStatus.ACCEPTED if receipts else ToolCallStatus.DEGRADED,
+        **identity,
+        status=ToolCallStatus.ACCEPTED if accepted else ToolCallStatus.DEGRADED,
+        attempt=max(last_attempt, 1),
+        retryable=False,
         provider=getattr(active, "provider", "none"),
         model=getattr(active, "model", "none"),
         latency_ms=_latency(started),
-        source_hash=source_hash,
-        result_hash=result_hash,
+        source_hash=source_hash if accepted else "",
+        result_hash=result_hash if accepted else "",
         citations=source_ids,
         sources=receipts,
-        error=None if receipts else "search returned no usable sources",
+        error=None if accepted else "search returned no usable sources",
     )
 
 
@@ -421,17 +509,19 @@ def _latency(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 3)
 
 
-def quoted_search_payload(receipts: list[SourceReceipt]) -> list[dict[str, str]]:
-    """Untrusted user-role payload. Never concatenated into system/governance prompts."""
+def quoted_search_payload(receipts: list[SourceReceipt]) -> dict[str, Any]:
+    """Fenced untrusted data. Never concatenated into system/governance prompts as instructions."""
 
-    return [
-        {
-            "source_id": item.source_id,
-            "url": item.url,
-            "title": item.title,
-            "excerpt": item.excerpt,
-            "trust_status": item.trust_status,
-        }
-        for item in receipts
-    ]
+    return fence_untrusted_data(
+        [
+            {
+                "source_id": item.source_id,
+                "url": item.url,
+                "title": item.title,
+                "excerpt": item.excerpt,
+                "trust_status": item.trust_status,
+            }
+            for item in receipts
+        ]
+    )
 

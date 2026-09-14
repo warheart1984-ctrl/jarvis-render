@@ -6,7 +6,10 @@ from jarvis.brain.tools.envelope import (
     ToolCallRecord,
     ToolCallStatus,
     ToolName,
+    fence_untrusted_data,
+    may_admit_retrieved_to_memory,
     stub_tool_call,
+    validate_tool_arguments,
 )
 from jarvis.brain.tools.search import (
     FakeSearchBackend,
@@ -28,8 +31,11 @@ __all__ = [
     "evidence_from_search_hit",
     "invoke_tool",
     "maybe_web_search",
+    "fence_untrusted_data",
+    "may_admit_retrieved_to_memory",
     "quoted_search_payload",
     "resolve_search_query",
     "search_citation",
     "stub_tool_call",
+    "validate_tool_arguments",
 ]
