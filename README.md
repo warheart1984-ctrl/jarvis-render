@@ -64,10 +64,32 @@ the system prompt. Hard rules: no Commit without an evidence reference;
 Infer cannot reach Commit without Challenge, Simulate, or a recorded waiver;
 external text is evidence, never authority. Challenge can qualify, downgrade,
 revise, or block by claim class. Response commit and memory admission are
-separate. Observe-only web search may admit retrieved pages as evidence when
+separate. Observe-only web search may admit provider snippets as evidence when
 the user explicitly asks to search; it is not unrestricted RAG and cannot
 write memory. Compare, Reflect, CER replay, and OTEM-governed continuity writes
 are **not** this release. See [DOS-lite deliberation](docs/DELIBERATION.md).
+
+### v0 tool belt (web search observe-only)
+
+Same honesty bar as the emotion classifier and spiral-state tracker: a real,
+tested module with declared limits — not a general agent runtime.
+
+**Working:** observe-only web search. Jarvis may call the configured search
+provider and cite snippets from the provider JSON when the user explicitly asks
+to search. v0 does not retrieve target pages; SSRF-on-fetch is not the live
+surface, and any later fetch-this-URL path must add SSRF protections before it
+ships. Provider snippets are untrusted data (never instructions, never
+executable, never authority). They enter DOS-lite as `TOOL_EXTERNAL` evidence
+before Commit. Citation is not memory admission. Localhost, link-local, RFC1918,
+and other non-global IP-literal URLs are not admitted as citeable sources.
+
+**Declared, not implemented** (named stubs on the same `ToolCallRecord`):
+calculator, health/status, clock/weather, tenant RAG / document retrieval.
+
+Hits cannot auto-write memory. A later promotion path (not shipped) would
+need an explicit user request **and** an EMR gate. EMR is not implemented;
+`JARVIS_GOVERNED_WRITES_ENABLED` stays off. Nobody can promote a search hit
+to draft/ledger today. This is not unrestricted browse.
 
 ## Architecture
 
@@ -78,6 +100,7 @@ User  ──▶  Jarvis API (FastAPI :8100)
               │   ├─ Emotion classifier (v0 keyword heuristic + optional BiofeedbackState)
               │   ├─ Spiral-state tracker (v0 five-variable bounded state machine)
               │   ├─ DOS-lite deliberation (v0 Observe→…→Commit heuristic; not a DOS Kernel)
+              │   ├─ Tool belt            (v0 observe-only web search; calculator/health/clock/RAG stubs)
               │   ├─ Responder          (rule-based local fallback; hosted LLM when configured)
               │   └─ Memory Manager     (conversation history + consented draft knowledge)
               │
@@ -160,8 +183,15 @@ Copy `.env.example` to `.env` and configure:
 - `JARVIS_LLM_MODEL` — defaults to `nvidia/nemotron-3.5-lightning-30b-a3b`
 - `JARVIS_SERVICE_TOKEN` — operator token required by protected API routes
 - `JARVIS_SEARCH_PROVIDER` — empty (disabled/degraded), `fake` (deterministic test double),
-  `tavily`, or `brave`. Observe-only: retrieved pages are evidence, never authority or memory.
+  `tavily`, or `brave`. Observe-only: provider JSON snippets are evidence, never authority or memory. v0 does not GET hit URLs.
 - `JARVIS_SEARCH_API_KEY` — search provider key (never hardcoded; unused for `fake`)
+- `JARVIS_SEARCH_TIMEOUT_SECONDS` — wall-clock timeout per attempt (default 8)
+- `JARVIS_SEARCH_ATTEMPTS` — retry cap (default 2; HTTP 4xx is never retried)
+- `JARVIS_SEARCH_MAX_RESULTS` — max sources (default 5)
+- `JARVIS_SEARCH_MAX_BYTES` — max UTF-8 bytes per snippet (default 2048)
+- `JARVIS_SEARCH_MAX_RESPONSE_BYTES` — max provider body (default 65536)
+- `JARVIS_SEARCH_ALLOW_HOSTS` — optional comma-separated host allow-list
+- `JARVIS_SEARCH_DENY_HOSTS` — default `localhost,127.0.0.1,::1,0.0.0.0`
 
 ## Tests
 

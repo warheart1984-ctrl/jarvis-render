@@ -118,16 +118,38 @@ user explicitly asks to search (`search for`, `web search`, `look up`, …) or
 sends a gated `search_query` on `POST /chat`. Jarvis does **not** auto-retrieve
 for every question.
 
-Hits enter the deliberation corpus as `tool_external` evidence through the
-existing Voss admission path (`authority=false`). Retrieved text is quoted on
-the user channel as untrusted evidence. It is never concatenated into
-system/governance prompts as instructions, never treated as a command, never
-able to change governance state, and never extracted into memory or
-preferences. There is no approval path yet; search remains draft/evidence.
+v0 search consumes the provider JSON only and does not retrieve target pages;
+SSRF-on-fetch is therefore not the live surface. A later fetch-this-URL path
+must add SSRF protections before it ships.
 
-Bounds: at most five sources, 240-character excerpts, timeouts, two attempts,
-and a per-tenant/session rate limit. Public traces keep URL, retrieval time,
-content hash, bounded excerpt, and trust status `untrusted_external`. They omit
+Hits enter the deliberation corpus as `tool_external` evidence **before Commit**
+through the existing Voss admission path (`authority=false`). Citation is not
+memory admission: a cited hit does not become a draft or ledger record. Localhost,
+link-local, RFC1918, and other non-global IP-literal URLs are dropped from the
+evidence corpus even when the provider JSON includes them.
+
+Retrieved text is wrapped in an untrusted-data fence (`channel=untrusted_external_data`,
+`instructions=false`, `executable=false`, `memory_eligible=false`) and quoted on
+the user channel as data. It is never concatenated into system/governance
+prompts as instructions, never treated as a command, never able to change
+governance state, and never extracted into memory or preferences.
+
+**Promotion is not shipped.** A later path would require both an explicit user
+request and an EMR gate before a cited hit could become draft memory or a
+Continuity ledger record. EMR is not implemented. `JARVIS_GOVERNED_WRITES_ENABLED`
+stays off. `may_admit_retrieved_to_memory()` returns false even when
+`user_requested=true`.
+
+Bounds (numbers, enforced): at most 5 sources, 240-character / 2048-byte
+excerpts, 65536-byte provider responses, wall-clock timeout (default 8s),
+retry cap 2, **no retry on HTTP 4xx**, per-tenant/session rate limit (8/min),
+and host allow/deny lists (default deny `localhost,127.0.0.1,::1,0.0.0.0`).
+Non-global IP literals (RFC1918, loopback, link-local) are rejected as citeable
+sources by numeric policy even if they are absent from the deny list.
+Every tool uses the same `ToolCallRecord`; missing `transaction_id`,
+`correlation_id`, tool name, validated arguments, timeout/retry metadata, or
+accepted hashes fail closed. Public traces keep URL, retrieval time, content
+hash, bounded excerpt, and trust status `untrusted_external`. They omit
 secrets, full pages, chain-of-thought, and `match_text`.
 
 If no search API key is configured, the adapter degrades (`unavailable`) the
