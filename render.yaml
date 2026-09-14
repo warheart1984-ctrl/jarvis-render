@@ -26,6 +26,24 @@ services:
         sync: false
       - key: JARVIS_SERVICE_TOKEN
         sync: false
+      - key: JARVIS_AUTH_MODE
+        sync: false
+      - key: JARVIS_PUBLIC_ORIGIN
+        sync: false
+      - key: JARVIS_OIDC_ISSUER
+        sync: false
+      - key: JARVIS_OIDC_AUDIENCE
+        sync: false
+      - key: JARVIS_OIDC_JWKS_URL
+        sync: false
+      - key: JARVIS_OIDC_CLIENT_ID
+        sync: false
+      - key: JARVIS_OIDC_CLIENT_SECRET
+        sync: false
+      - key: JARVIS_OIDC_CONNECTION
+        sync: false
+      - key: JARVIS_RECALL_SIGNING_KEY
+        sync: false
     disk:
       name: jarvis-memory
       mountPath: /data

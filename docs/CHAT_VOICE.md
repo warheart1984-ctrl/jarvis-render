@@ -1,10 +1,12 @@
 # Jarvis text and voice
 
-Open the service URL; it now redirects to /ui/. Enter a user ID and the
-JARVIS_SERVICE_TOKEN in the console, then Connect. The NVIDIA key belongs only
-in Render, never in the browser. Tokens are held in page memory, not localStorage.
-The browser remembers only a session ID and user ID. Conversation history and
-audit events are persisted on the server.
+Open the service URL; it now redirects to /ui/. In operator mode, enter a user
+ID and the `JARVIS_SERVICE_TOKEN`, then Connect. In OAuth mode the console
+shows Sign in with Google; the IdP (Auth0) is the authorization server and
+Google is only its social connection. The NVIDIA key belongs only in Render,
+never in the browser. Operator tokens stay out of the OAuth UI. The browser
+remembers only a session ID and user ID. Conversation history and audit events
+are persisted on the server.
 
 Select Voice, press Start recording, speak, and press Stop & send. After
 transcription the message is sent through the same /chat endpoint used by text.
@@ -24,7 +26,9 @@ are held in memory and are not saved to disk.
 - JARVIS_LLM_ATTEMPT_TIMEOUT_SECONDS=15
 - JARVIS_LLM_FALLBACK_MODELS=openai/gpt-oss-20b,z-ai/glm-5.3-flash
 - JARVIS_SPEECH_VOICE=Magpie-Multilingual.EN-US.Aria
-- JARVIS_SERVICE_TOKEN: the operator token protecting chat, speech, sessions and diagnostics.
+- JARVIS_SERVICE_TOKEN: operator break-glass token. Required in production.
+  In operator mode it protects chat, speech, sessions and diagnostics. In
+  OAuth mode the UI uses a session cookie instead; keep this token off the page.
 - JARVIS_CORS_ORIGINS=https://jarvis-avfy.onrender.com
 - JARVIS_MEMORY_DB_PATH=/data/jarvis.sqlite3
 
@@ -41,7 +45,9 @@ unlimited free production hosting. No GPU runs in the Render container.
 
 ## API
 
-All endpoints below require X-Jarvis-Service-Token.
+All endpoints below require `X-Jarvis-Service-Token` in operator mode. In
+OAuth mode a signed-in session cookie is enough; the operator token remains
+break-glass.
 
 - GET /capabilities: provider/model and configuration presence, no secrets.
 - POST /chat: user_id, message, optional session_id, input_mode (text/voice),

@@ -15,9 +15,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from jarvis.auth import cookie_name
 from jarvis.brain.llm import configured_models, configured_slots, inference_configured, provider_config
 from jarvis.core.config import settings
 from jarvis.persistence import AuditLedger
+from jarvis.routes.auth import router as auth_router
 from jarvis.routes.chat import engine
 from jarvis.routes.chat import router as chat_router
 from jarvis.routes.health import router as health_router
@@ -80,9 +82,19 @@ async def service_boundary(request: Request, call_next):
         recent.append(now)
         _rate[key] = recent
     expected = settings.service_token
-    if protected and (expected or settings.environment.lower() in {"production", "prod"}):
-        supplied = request.headers.get("X-Jarvis-Service-Token", "")
-        if not expected or not secrets.compare_digest(supplied, expected):
+    supplied = request.headers.get("X-Jarvis-Service-Token", "")
+    request.state.operator = bool(expected) and secrets.compare_digest(supplied, expected)
+    request.state.principal = engine.access.authenticate(request.cookies.get(cookie_name()) or "")
+    if protected and settings.oauth_enabled():
+        if not request.state.operator and request.state.principal is None:
+            _security_audit.append(uuid4().hex, "security", "auth_failure", {"path": path, "request_id": request_id})
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Sign in required", "request_id": request_id},
+                headers={"X-Request-ID": request_id},
+            )
+    elif protected and (expected or settings.environment.lower() in {"production", "prod"}):
+        if not request.state.operator:
             _security_audit.append(uuid4().hex, "security", "auth_failure", {"path": path, "request_id": request_id})
             return JSONResponse(
                 status_code=401,
@@ -123,6 +135,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(health_router)
 app.include_router(voice_router)
@@ -135,8 +148,13 @@ async def root() -> RedirectResponse:
 
 
 @app.get("/capabilities")
-async def capabilities() -> dict[str, object]:
+async def capabilities(request: Request) -> dict[str, object]:
     provider, key = provider_config()
+    principal = None if getattr(request.state, "operator", False) else getattr(request.state, "principal", None)
+    operator = getattr(request.state, "operator", False)
+    recall_configured = bool(
+        (principal and settings.recall_signing_key) or (settings.service_token and settings.recall_owner_user_id)
+    )
     return {
         "provider": provider,
         "model": configured_models()[0] if configured_models() else settings.llm_model,
@@ -157,9 +175,11 @@ async def capabilities() -> dict[str, object]:
         "speech_provider": "nvidia",
         "voice_transport": "turn_based",
         "full_duplex": False,
-        "recall_configured": bool(settings.service_token and settings.recall_owner_user_id),
-        "recall_owner_user_id": settings.recall_owner_user_id if settings.service_token else "",
-        "recall_auth_mode": "single_operator_service_token",
+        "auth_mode": settings.auth_mode,
+        "oauth_login": settings.oauth_enabled(),
+        "recall_configured": recall_configured,
+        "recall_owner_user_id": settings.recall_owner_user_id if operator and settings.service_token else "",
+        "recall_auth_mode": "oidc_access_token" if principal else "single_operator_service_token",
         "memory_inspection_available": True,
         "governed_writes_enabled": settings.governed_writes_allowed(),
         "new_memory_status": "draft",
