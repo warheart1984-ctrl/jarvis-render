@@ -148,11 +148,11 @@ def utc_now() -> str:
 def may_admit_retrieved_to_memory(*, user_requested: bool = False) -> bool:
     """Whether retrieved tool text may become memory.
 
-    Always false in this release. A later path (not shipped) would require both
-    an explicit user request and an EMR gate before a cited hit could become a
-    draft memory or Continuity ledger record. EMR is not implemented.
-    ``JARVIS_GOVERNED_WRITES_ENABLED`` stays off. ``user_requested`` cannot
-    bypass that.
+    Always false. Hypothesized claims, tool/search snippets, and inferred
+    summaries stay off the memory / preferences / Continuity write path even
+    when the reply is a polished summary of a hit. ``user_requested`` and
+    ``JARVIS_GOVERNED_WRITES_ENABLED`` cannot bypass that, including in
+    production. This is a durable product lock, not an EMR gate.
     """
 
     return False

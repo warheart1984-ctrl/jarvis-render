@@ -152,7 +152,8 @@ class JarvisSettings(BaseSettings):
         return cleaned.rstrip("/")
 
     def governed_writes_allowed(self) -> bool:
-        # Production promotion requires EMR gates, which are not implemented yet.
+        # Production cannot enable Continuity/ledger writes via the env flag.
+        # Hypothesized/tool/inferred memory admission is a separate durable lock.
         return self.governed_writes_enabled and self.environment.lower() not in {"production", "prod"}
 
     def oauth_enabled(self) -> bool:

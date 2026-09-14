@@ -420,20 +420,31 @@ class JarvisEngine:
                 message["turn_id"] = turn_id
 
             snippets = [hit.excerpt for hit in search_record.sources] if search_record else []
+            admit_user_grounded = (
+                request.memory_consent
+                and decision == "answer"
+                and runner.memory_admission == "eligible"
+                and not snippets
+            )
             memory_entry = (
-                extract_memory(state, request.message, reply)
-                if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible"
+                extract_memory(
+                    state,
+                    request.message,
+                    reply,
+                    snippets=snippets,
+                    memory_admission=runner.memory_admission,
+                )
+                if admit_user_grounded
                 else None
             )
             if memory_entry and snippets and not may_admit_retrieved_to_memory(
                 user_requested=request.memory_consent
             ):
-                if any(snippet and snippet in memory_entry.content for snippet in snippets):
-                    memory_entry = None
+                memory_entry = None
             if memory_entry:
                 state.long_term_memory = add_long_term_memory(state, memory_entry)
 
-            if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible":
+            if admit_user_grounded:
                 state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
             turn = SpiralTurn(
@@ -463,7 +474,11 @@ class JarvisEngine:
             backend_status = "skipped_read_only"
             if decision == "answer" and request.memory_consent:
                 backend_status = "skipped_writes_disabled"
-                if settings.governed_writes_allowed():
+                if (
+                    settings.governed_writes_allowed()
+                    and runner.memory_admission == "eligible"
+                    and not snippets
+                ):
                     backend_status = await self._sync_with_spiral(state, request.message, reply)
             turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
