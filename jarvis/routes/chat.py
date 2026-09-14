@@ -224,6 +224,8 @@ async def chat(
         if payload.user_id != settings.recall_owner_user_id:
             raise HTTPException(status_code=403, detail="User ID does not match the server-bound operator")
         recall_owner = settings.recall_owner_user_id
+    if payload.session_id:
+        require_session(request, engine.access, payload.session_id)
     try:
         return await active.chat(payload, recall_owner=recall_owner, principal=principal)
     except ProviderError as exc:
@@ -244,8 +246,7 @@ async def resume_session(payload: ResumeRequest, request: Request) -> dict[str, 
     principal = guard_visitor_mutation(request)
     active = bound_engine(request)
     user_id = bind_user(request, payload.user_id) if principal else payload.user_id
-    if principal:
-        require_session(request, engine.access, payload.session_id)
+    require_session(request, engine.access, payload.session_id)
     try:
         await active.get_or_create_session(user_id, payload.session_id)
         return {
@@ -285,6 +286,7 @@ async def memory_inspection(
     session_id: str, request: Request, user_id: str, x_jarvis_service_token: str = Header(default="")
 ) -> dict[str, Any]:
     principal = visitor(request)
+    require_session(request, engine.access, session_id)
     if principal:
         user_id = bind_user(request, user_id)
         active = owned_engine(request, session_id)
