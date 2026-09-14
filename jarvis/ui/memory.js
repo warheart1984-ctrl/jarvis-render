@@ -56,6 +56,14 @@ export function deliberationSummary(deliberation) {
   if (!stages.length) return "not run";
   return stages.map(stage => stage.name).join(" → ");
 }
+export function coverageLabel(coverage) {
+  if (!coverage || coverage.sentence_count == null) return "not recorded";
+  const tagged = coverage.tagged_count ?? 0;
+  const total = coverage.sentence_count;
+  const matcher = coverage.matcher || "v0-token-overlap";
+  if (coverage.complete) return `${tagged}/${total} sentences tagged · ${matcher}`;
+  return `${tagged}/${total} sentences tagged · incomplete · ${matcher}`;
+}
 export function deliberationView(deliberation) {
   const detail = element("details", undefined, "deliberation-trace");
   detail.append(element("summary", "DOS-lite v0 · " + deliberationSummary(deliberation)));
@@ -68,6 +76,7 @@ export function deliberationView(deliberation) {
       ["Memory admission", deliberation.memory_admission || "not recorded"],
       ["Committed", deliberation.committed ? "yes" : "no"],
       ["Status", deliberation.status || "not_run"],
+      ["Reply coverage", coverageLabel(deliberation.reply_coverage)],
     ]));
   }
   const claims = deliberation?.claims || [];
@@ -86,6 +95,9 @@ export function deliberationView(deliberation) {
   }
   for (const warning of deliberation?.unsupported_claim_warnings || []) {
     detail.append(element("p", warning, "hint"));
+  }
+  for (const sentence of deliberation?.reply_coverage?.uncovered || []) {
+    detail.append(element("p", "Uncovered reply sentence: " + sentence, "hint"));
   }
   return detail;
 }

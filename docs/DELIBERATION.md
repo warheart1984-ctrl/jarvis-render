@@ -28,6 +28,8 @@ v0 implements the first ring, plus a v0 **claim-class gate** on Challenge:
 2. **Claims carry CRS status and evidence linkage** (Observed / Specified /
    Hypothesized, plus unsupported warnings). A claim is an inspectable
    `{text, tag, claim_class, support, severity, action, evidence_ids}` object.
+   The v0 matcher may link a claim to already-admitted history or memory
+   evidence by content-token overlap. It does not entail the claim.
 3. **External outputs contribute evidence and cannot establish authority.**
    Tool / RAG / other-agent / `request.context` text is admitted with
    `authority=false`. The runner ignores a requested authority flag.
@@ -70,14 +72,23 @@ refs, then refuses `Commit` when a hard rule fails:
    are not copied into public traces.
 4. The final envelope carries CRS-style claim tags — Observed / Specified /
    Hypothesized — plus unsupported-claim warnings when a claim lacks evidence.
+   Reply sentences are linked to admitted evidence with a v0 token-overlap
+   matcher (not NLI): a restatement of the current utterance can count as
+   history evidence without saying “your request”, and a reply that shares
+   content words with a memory summary can count without naming `memory_id`.
+   Whole-answer coverage records every committed-reply sentence as a claim
+   (or lists it uncovered if the claim budget is exhausted). That is
+   accounting, not proof the hosted model used the citation.
 
 Challenge can force clarification, abstain, fail-closed, qualify, downgrade,
 revise, or block. Conversational unsupported claims do not block a turn.
 Fail-closed thresholds stay the same as the governance safety lane
 (uncertainty ≥ 0.50, stress > 0.80).
 
-Claim tags and classes are a deterministic keyword/heuristic pass. They are
-**not** model-grade NLI and do not prove the hosted LLM used a citation.
+Claim tags, classes, and evidence links are a deterministic keyword/heuristic
+pass. They are **not** model-grade NLI and do not prove the hosted LLM used a
+citation. External text remains evidence, never authority. Linker `match_text`
+is used only in-process and is omitted from public traces.
 
 ## Where it lives
 

@@ -105,7 +105,7 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
     if result.get("status") == "simulated":
         return {"status": "simulated", "memory_id": memory.memory_id, "durable": False, "ledger": result}
     if result.get("status") in {"conflict", "refused"} or result.get("refused") is True:
-        active.set_read_only(state.session_id)
+        active.set_read_only(state.session_id, "conflict")
         active.audit.append(
             f"conflict-{request.memory_id}",
             state.session_id,
@@ -117,7 +117,13 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
                 "mode": "read_only",
             },
         )
-        return {"status": "conflict", "memory_id": memory.memory_id, "read_only": True, "ledger": result}
+        return {
+            "status": "conflict",
+            "memory_id": memory.memory_id,
+            "read_only": True,
+            "lock_reason": "conflict",
+            "ledger": result,
+        }
     if result.get("status") != "accepted":
         raise HTTPException(status_code=502, detail="Continuity Ledger returned an unconfirmed write result")
     ledger_memory = result.get("memory") or {}
@@ -169,10 +175,11 @@ async def supersede_memory(
         raise HTTPException(status_code=503, detail="Continuity Ledger unavailable") from exc
     if result.get("refused") is True or result.get("accepted") is False:
         if result.get("refuse_reason") == "conflict-membrane":
-            engine.set_read_only(request.session_id)
+            engine.set_read_only(request.session_id, "conflict")
         return {
             "status": "conflict" if result.get("refuse_reason") == "conflict-membrane" else "refused",
             "read_only": engine.is_read_only(request.session_id),
+            "lock_reason": (reason.value if (reason := engine.lock_reason(request.session_id)) else None),
             "ledger": result,
         }
     replacement = result.get("memory") or result.get("replacement") or {}

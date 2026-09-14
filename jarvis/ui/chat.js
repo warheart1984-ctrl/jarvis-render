@@ -1,4 +1,7 @@
 import { createRecorder, disposePlayback } from "./audio.js";
+import { preserveDraftOnNewChat, readDraft, writeDraft } from "./draft.js";
+import { fallbackWaitMessage } from "./inference.js";
+import { lockBanner } from "./locks.js";
 import { recallStatus } from "./recall.js";
 import { deliberationView, receiptView, renderInspection } from "./memory.js";
 
@@ -22,6 +25,8 @@ const storage = {
 };
 const active = storage.read();
 if (active?.user) $("user-id").value = active.user;
+if (!$("message").value) $("message").value = readDraft();
+$("message").addEventListener("input", () => writeDraft($("message").value));
 function error(message = "") { $("error").textContent = message; $("error").hidden = !message; }
 function activity(message) { $("activity").textContent = message; }
 function textMode(reason) {
@@ -131,10 +136,15 @@ function message(role, text, response = null, turnId = "") {
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }
 function decision(d) {
-  $("decision").textContent = d.read_only
-    ? "Read-only discussion. Consequential actions are paused: " + (d.fail_closed_reason || "policy restriction")
-    : "Response completed under Jarvis policy"
+  if (d.decision === "degraded") {
+    $("decision").textContent = "Provider availability degraded. Inference was not confirmed. This is not a governance fail-closed.";
+  } else if (d.read_only) {
+    $("decision").textContent = "Read-only discussion. Consequential actions are paused: " + (d.fail_closed_reason || "policy restriction")
+      + (d.safe_mode ? " Inference was not confirmed." : "");
+  } else {
+    $("decision").textContent = "Response completed under Jarvis policy"
       + (d.deliberation?.committed ? " after a v0 DOS-lite deliberation commit." : ".");
+  }
   $("confidence").textContent = Number(d.confidence).toFixed(2);
   $("uncertainty").textContent = Number(d.uncertainty).toFixed(2);
   $("provider").textContent = d.provider + " / " + d.model;
@@ -171,10 +181,10 @@ async function governance() {
   $("memory-state").textContent = s.memory_count + " extracted memories. External storage is not confirmed by this count.";
   const verified = v.valid && inspection.status !== "unverified";
   $("audit-state").textContent = verified ? "Audit chain verified." : "Audit or turn verification failed.";
-  recovered = s.read_only || !verified;
-  $("recovery").hidden = !recovered;
-  $("recovery").textContent = !verified ? "Audit or turn verification failed. Start a new chat; this session remains blocked."
-    : "Recovered session: history is available, but new turns are locked. Start a new chat to continue.";
+  const banner = lockBanner({ lockReason: s.lock_reason, verified, readOnly: s.read_only });
+  recovered = !!banner;
+  $("recovery").hidden = !banner;
+  $("recovery").textContent = banner ? banner.text : "";
   controls();
 }
 async function afterConnect() {
@@ -212,8 +222,9 @@ $("connect-form").onsubmit = async e => {
 $("new-chat").onclick = () => {
   governanceGeneration++; clearInspection();
   stopAudio(); session = ""; recovered = false; storage.clear();
+  const kept = preserveDraftOnNewChat($("message").value);
   $("messages").replaceChildren(); $("session-label").textContent = "New conversation";
-  $("recovery").hidden = true; error(); $("message").value = ""; $("consent").checked = false;
+  $("recovery").hidden = true; error(); $("message").value = kept; $("consent").checked = false;
   for (const id of ["state", "trace", "audit"]) $(id).textContent = "No session yet.";
   $("decision").textContent = "No response yet."; $("confidence").textContent = "—"; $("uncertainty").textContent = "—";
   $("latency").textContent = "—"; $("cost").textContent = "No response yet.";
@@ -224,12 +235,13 @@ $("new-chat").onclick = () => {
 async function send(inputMode = "text") {
   if (busy || !connected || recovered || recording) return;
   const text = $("message").value.trim(); if (!text) return;
-  busy = true; controls(); error(); stopAudio(); activity("Jarvis is thinking…");
+  busy = true; controls(); error(); stopAudio(); activity(fallbackWaitMessage(caps.slots));
   try {
     const d = await post("/chat", { user_id: $("user-id").value.trim(), session_id: session || null,
       message: text, input_mode: inputMode, memory_consent: $("consent").checked,
       recall_previous: !!caps.recall_configured && $("recall").checked });
     setSession(d.session_id); message("user", text); message("jarvis", d.reply, d); decision(d); $("message").value = "";
+    writeDraft("");
     try { await governance(); } catch (e) { error("Reply received, but governance refresh failed: " + e.message); }
     activity("Reply received.");
     if (d.safe_mode) { textMode("Inference " + d.inference_status + ". Jarvis is in basic safe-response mode."); return; }

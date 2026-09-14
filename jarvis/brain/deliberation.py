@@ -26,6 +26,7 @@ Public traces omit secrets, hidden prompts, and private reasoning.
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any, Literal, assert_never
 
@@ -44,8 +45,54 @@ DOS_LITE_LABEL = (
     "trained judge, or private chain-of-thought engine"
 )
 _SUMMARY_LIMIT = 240
-_CLAIM_LIMIT = 12
+_CLAIM_LIMIT = 16
 _HYPOTHETICAL_HINTS = ("what if", "suppose", "imagine", "hypothetically")
+_HISTORY_PHRASES = ("you said", "your request", "you asked")
+_CONTENT_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    {
+        "about",
+        "also",
+        "and",
+        "are",
+        "been",
+        "being",
+        "but",
+        "can",
+        "did",
+        "does",
+        "for",
+        "from",
+        "had",
+        "has",
+        "have",
+        "here",
+        "into",
+        "just",
+        "not",
+        "our",
+        "out",
+        "over",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "they",
+        "this",
+        "was",
+        "were",
+        "what",
+        "when",
+        "which",
+        "will",
+        "with",
+        "you",
+        "your",
+    }
+)
 _CLARIFY_HINTS = ("maybe", "not sure", "which one", "or should", "what do you think")
 _FACTUAL_HINTS = ("what is", "who is", "when did", "prove", "is it true", "fact check")
 
@@ -186,6 +233,7 @@ class EvidenceRef(BaseModel):
     memory_id: str | None = None
     source: str = ""
     admission: str | None = None
+    match_text: str = Field(default="", exclude=True)
 
     @field_validator("summary")
     @classmethod
@@ -235,6 +283,18 @@ class WaiverRecord(BaseModel):
     after_stage: Literal["infer"] = "infer"
 
 
+class ReplyCoverage(BaseModel):
+    """Whether every committed-reply sentence was tagged. v0 accounting, not NLI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sentence_count: int = 0
+    tagged_count: int = 0
+    uncovered: list[str] = Field(default_factory=list)
+    complete: bool = True
+    matcher: str = "v0-token-overlap"
+
+
 class DeliberationResult(BaseModel):
     """Public DOS-lite envelope for traces, audit, and API metadata."""
 
@@ -254,6 +314,7 @@ class DeliberationResult(BaseModel):
     blocked_reason: str | None = None
     response_commit: Literal["committed", "qualified", "revised", "refused"] = "committed"
     memory_admission: Literal["eligible", "held", "blocked"] = "eligible"
+    reply_coverage: ReplyCoverage = Field(default_factory=ReplyCoverage)
 
     def to_public_dict(self) -> dict[str, Any]:
         return omit_secrets(self.model_dump(mode="json"))
@@ -276,6 +337,13 @@ def empty_deliberation(*, status: str = "not_run") -> dict[str, Any]:
             "blocked_reason": None,
             "response_commit": "committed",
             "memory_admission": "eligible",
+            "reply_coverage": {
+                "sentence_count": 0,
+                "tagged_count": 0,
+                "uncovered": [],
+                "complete": True,
+                "matcher": "v0-token-overlap",
+            },
         }
     )
 
@@ -399,7 +467,7 @@ def tag_claims(
     evidence: list[EvidenceRef],
     emotion_label: str,
     intent: str,
-) -> tuple[list[ClaimRecord], list[str]]:
+) -> tuple[list[ClaimRecord], list[str], ReplyCoverage]:
     """Attach CRS-style tags. Heuristic only; not model-grade claim extraction."""
 
     by_id = {item.evidence_id: item for item in evidence}
@@ -446,10 +514,14 @@ def tag_claims(
             )
         )
 
-    for index, sentence in enumerate(_reply_sentences(reply)):
+    reply_sentences = _reply_sentences(reply)
+    uncovered: list[str] = []
+    tagged_reply = 0
+    for index, sentence in enumerate(reply_sentences):
         if len(claims) >= _CLAIM_LIMIT:
-            break
-        linked = _match_evidence(sentence, evidence)
+            uncovered.append(_clip(sentence))
+            continue
+        linked = _match_evidence(sentence, evidence, utterance=message)
         tag = ClaimTag.HYPOTHESIZED if not linked else ClaimTag.OBSERVED
         claims.append(
             ClaimRecord(
@@ -460,6 +532,15 @@ def tag_claims(
                 unsupported=not linked,
             )
         )
+        tagged_reply += 1
+
+    coverage = ReplyCoverage(
+        sentence_count=len(reply_sentences),
+        tagged_count=tagged_reply,
+        uncovered=uncovered[:8],
+        complete=not uncovered,
+        matcher="v0-token-overlap",
+    )
 
     warnings: list[str] = []
     for claim in claims:
@@ -481,7 +562,11 @@ def tag_claims(
         if warning not in seen:
             seen.add(warning)
             unique.append(warning)
-    return claims[:_CLAIM_LIMIT], unique
+    if uncovered:
+        unique.append(
+            f"whole-answer coverage incomplete: {len(uncovered)} reply sentence(s) not tagged"
+        )
+    return claims[:_CLAIM_LIMIT], unique, coverage
 
 
 def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
@@ -664,22 +749,59 @@ def _hedge_substantive(reply: str, claims: list[ClaimRecord]) -> str:
 
 
 def _reply_sentences(reply: str) -> list[str]:
-    parts = [part.strip() for part in reply.replace("!", ".").replace("?", ".").split(".")]
-    return [part for part in parts if len(part) > 12][:6]
+    """Split the committed reply so coverage is not limited to keyword-matching clauses."""
+
+    parts = [_clip(part) for part in re.split(r"[.!?]+", reply or "")]
+    return [part for part in parts if part]
 
 
-def _match_evidence(sentence: str, evidence: list[EvidenceRef]) -> list[str]:
+def _content_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for word in _CONTENT_TOKEN_RE.findall((text or "").lower()):
+        if len(word) < 4 or word in _STOPWORDS:
+            continue
+        tokens.add(word)
+        if word.endswith("s") and len(word) > 4:
+            tokens.add(word[:-1])
+    return tokens
+
+
+def _token_overlap(left: str, right: str) -> int:
+    return len(_content_tokens(left) & _content_tokens(right))
+
+
+def _match_evidence(sentence: str, evidence: list[EvidenceRef], *, utterance: str = "") -> list[str]:
+    """v0 linker: source tokens, restatement phrases, or content-token overlap with admitted evidence.
+
+    Not NLI. A restatement of the current user utterance can link to history without
+    saying "your request". A reply that uses the same content words as a memory
+    summary can link without naming the memory_id.
+    """
+
     lower = sentence.lower()
+    sentence_tokens = _content_tokens(sentence)
     linked: list[str] = []
     for item in evidence:
         if item.kind is EvidenceKind.HYPOTHESIZED_NONE:
             continue
+        if item.evidence_id in linked:
+            continue
         token = (item.memory_id or item.source or item.kind.value).lower()
-        if token and token in lower:
-            linked.append(item.evidence_id)
-        elif item.kind is EvidenceKind.HISTORY and any(
-            word in lower for word in ("you said", "your request", "you asked")
+        matched = bool(token and token in lower)
+        if not matched and item.kind is EvidenceKind.HISTORY and any(phrase in lower for phrase in _HISTORY_PHRASES):
+            matched = True
+        corpus = item.match_text or item.summary
+        if not matched and _token_overlap(sentence, corpus) >= 2:
+            matched = True
+        if (
+            not matched
+            and item.kind is EvidenceKind.HISTORY
+            and item.evidence_id == "hist-current-utterance"
+            and utterance
+            and len(sentence_tokens & _content_tokens(utterance)) >= 2
         ):
+            matched = True
+        if matched:
             linked.append(item.evidence_id)
     return linked[:4]
 
@@ -753,6 +875,7 @@ class DeliberationRunner:
         self.response_commit: Literal["committed", "qualified", "revised", "refused"] = "committed"
         self.memory_admission: Literal["eligible", "held", "blocked"] = "eligible"
         self.gated_reply = ""
+        self.reply_coverage = ReplyCoverage()
         self._completed: set[DeliberationStageName] = set()
         self._critiqued = False
         self._inputs: dict[str, Any] = {}
@@ -791,6 +914,7 @@ class DeliberationRunner:
                     summary=_clip("Current user utterance (history citation of specified input)"),
                     source="user_message",
                     citation_id=None,
+                    match_text=_clip(message),
                 )
             )
         for memory_id, summary in memories or []:
@@ -798,9 +922,10 @@ class DeliberationRunner:
                 EvidenceRef(
                     evidence_id=f"mem-{memory_id}",
                     kind=EvidenceKind.MEMORY,
-                    summary=_clip(summary or f"memory {memory_id}"),
+                    summary=_clip(f"memory citation {memory_id}"),
                     memory_id=memory_id,
                     source="memory",
+                    match_text=_clip(summary or f"memory {memory_id}"),
                 )
             )
         for index, (ref, summary) in enumerate(history or []):
@@ -808,8 +933,9 @@ class DeliberationRunner:
                 EvidenceRef(
                     evidence_id=f"hist-{ref or index}",
                     kind=EvidenceKind.HISTORY,
-                    summary=_clip(summary or f"history {ref}"),
+                    summary=_clip(f"history citation {ref or index}"),
                     source="history",
+                    match_text=_clip(summary or f"history {ref}"),
                 )
             )
         if external_context:
@@ -899,7 +1025,7 @@ class DeliberationRunner:
 
     def evaluate(self, reply: str) -> DeliberationRunner:
         self._reply = reply
-        claims, warnings = tag_claims(
+        claims, warnings, coverage = tag_claims(
             message=str(self._inputs.get("message") or ""),
             reply=reply,
             evidence=self.evidence,
@@ -908,6 +1034,7 @@ class DeliberationRunner:
         )
         self.claims = annotate_claims(claims, self.evidence)
         self.warnings = warnings
+        self.reply_coverage = coverage
         resolution, reasons, response_commit, memory_admission = resolve_claim_gate(self.claims, self.challenge_action)
         self.challenge_action = resolution
         for reason in reasons:
@@ -921,6 +1048,7 @@ class DeliberationRunner:
             (
                 f"Evaluated {len(self.claims)} tagged claims; "
                 f"{len(self.warnings)} unsupported-claim warnings; "
+                f"reply coverage {self.reply_coverage.tagged_count}/{self.reply_coverage.sentence_count}; "
                 f"claim-gate {resolution.value}; response={response_commit}; memory={memory_admission}"
             ),
         )
@@ -984,6 +1112,7 @@ class DeliberationRunner:
             blocked_reason=blocked_reason,
             response_commit=self.response_commit,
             memory_admission=self.memory_admission,
+            reply_coverage=self.reply_coverage,
         )
 
     def _record(self, name: DeliberationStageName, detail: str) -> None:

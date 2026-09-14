@@ -214,6 +214,7 @@ def test_api_provider_failure_and_resume(client, monkeypatch):
     monkeypatch.setattr(chat, "engine", JarvisEngine(store=engine.store))
     response = client.post("/sessions/resume", headers=headers, json={"user_id": "u", "session_id": data["session_id"]})
     assert response.json()["state"]["read_only"]
+    assert response.json()["state"]["lock_reason"] == "recovery"
     assert (
         client.post(
             "/chat", headers=headers, json={"user_id": "u", "session_id": data["session_id"], "message": "continue"}

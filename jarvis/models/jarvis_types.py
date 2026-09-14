@@ -26,6 +26,14 @@ class SpiralPhase(str, Enum):
     EVOLVE = "evolve"
 
 
+class SessionLockReason(str, Enum):
+    """Why a session refuses new turns. Distinct from governance fail-closed."""
+
+    RECOVERY = "recovery"
+    CONFLICT = "conflict"
+    VERIFICATION = "verification"
+
+
 class ChatRequest(BaseModel):
     """Incoming chat message from the user."""
 
@@ -71,6 +79,7 @@ class ChatResponse(BaseModel):
     correlation_id: str = ""
     previous_session: dict[str, Any] = Field(default_factory=lambda: {"status": "disabled"})
     context_receipt: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded", "citations": []})
+    lock_reason: SessionLockReason | None = None
     deliberation: dict[str, Any] = Field(
         default_factory=lambda: {
             "version": "v0-dos-lite",
@@ -90,6 +99,13 @@ class ChatResponse(BaseModel):
             "blocked_reason": None,
             "response_commit": "committed",
             "memory_admission": "eligible",
+            "reply_coverage": {
+                "sentence_count": 0,
+                "tagged_count": 0,
+                "uncovered": [],
+                "complete": True,
+                "matcher": "v0-token-overlap",
+            },
         }
     )
 

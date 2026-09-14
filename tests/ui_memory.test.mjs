@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deliberationSummary, deliberationView, receiptSummary, receiptView, renderInspection } from "../jarvis/ui/memory.js";
+import { coverageLabel, deliberationSummary, deliberationView, receiptSummary, receiptView, renderInspection } from "../jarvis/ui/memory.js";
 
 // Tiny strict DOM stub: HTML injection and links fail instead of silently passing.
 class Node {
@@ -46,7 +46,8 @@ test("DOS-lite claim tags render as text and do not oversell a kernel", () => {
     stages: [{name: "observe"}, {name: "infer"}, {name: "challenge"}, {name: "commit"}],
     claims: [{tag: "observed", claim_class: "factual", support: "present", severity: "harmless", action: "continue", text: "User utterance observed", unsupported: false},
       {tag: "hypothesized", claim_class: "causal", support: "missing", severity: "meaningful", action: "revise", text: '<img src=x onerror="evil()">', unsupported: true}],
-    unsupported_claim_warnings: ["unsupported claim (hypothesized): emotion label"]
+    unsupported_claim_warnings: ["unsupported claim (hypothesized): emotion label"],
+    reply_coverage: {sentence_count: 2, tagged_count: 2, uncovered: [], complete: true, matcher: "v0-token-overlap"}
   });
   const text = allText(view);
   assert.equal(view.className, "deliberation-trace");
@@ -55,7 +56,9 @@ test("DOS-lite claim tags render as text and do not oversell a kernel", () => {
   assert.match(text, /HYPOTHESIZED/);
   assert.match(text, /causal/);
   assert.match(text, /Memory admission/);
+  assert.match(text, /2\/2 sentences tagged/);
   assert.match(text, /<img/);
   assert.match(text, /unsupported claim/);
   assert.equal(deliberationSummary({}), "not run");
+  assert.match(coverageLabel({sentence_count: 3, tagged_count: 2, complete: false, matcher: "v0-token-overlap"}), /incomplete/);
 });

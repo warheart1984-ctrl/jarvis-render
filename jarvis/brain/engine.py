@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, assert_never
 from uuid import uuid4
 
 from jarvis.auth import AccessStore, Principal
@@ -37,6 +37,7 @@ from jarvis.models.jarvis_types import (
     ChatRequest,
     ChatResponse,
     JarvisState,
+    SessionLockReason,
     SpiralTurn,
 )
 from jarvis.persistence import AuditLedger, JarvisStore
@@ -46,6 +47,19 @@ from jarvis.spiral_client import SpiralClient
 from jarvis.spiral_client.infinity import ProjectInfinityClient
 
 logger = logging.getLogger(__name__)
+
+_LOCK_MESSAGES = {
+    SessionLockReason.RECOVERY: (
+        "Session is read-only after verified recovery (reason=recovery). Start a new chat to continue."
+    ),
+    SessionLockReason.CONFLICT: (
+        "Session is read-only pending conflict resolution (reason=conflict)."
+    ),
+    SessionLockReason.VERIFICATION: (
+        "Session is read-only because audit or turn verification failed (reason=verification). "
+        "Start a new chat."
+    ),
+}
 
 
 class JarvisEngine:
@@ -67,7 +81,7 @@ class JarvisEngine:
         self.reviver = ReviverLedger(self.store.path, *self.store.scope)
         self.recall = RecallLedger(self.store.path, *self.store.scope)
         self._tenant_engines: dict[tuple[str, str], JarvisEngine] = {}
-        self._read_only_sessions: set[str] = set()
+        self._read_only_reasons: dict[str, SessionLockReason] = {}
         self.continuity = (
             ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token)
             if settings.continuity_ledger_url
@@ -129,7 +143,7 @@ class JarvisEngine:
                         raise ValueError("Recovery checkpoint is invalid; start a new session.") from None
                     if state.user_id != user_id or state.session_id != new_id:
                         raise ValueError("Session does not belong to this user.")
-                    self._read_only_sessions.add(new_id)
+                    self.set_read_only(new_id, SessionLockReason.RECOVERY)
                 elif self.audit.list(new_id) or self.reviver.latest_verified(new_id):
                     raise ValueError("Session recovery could not be verified; start a new session.")
             self._sessions[new_id] = state
@@ -182,8 +196,9 @@ class JarvisEngine:
         ):
             raise ValueError("Recall ownership check failed")
         state = await self.get_or_create_session(request.user_id, request.session_id)
-        if state.session_id in self._read_only_sessions:
-            raise ValueError("Session is read-only pending conflict resolution.")
+        if state.session_id in self._read_only_reasons:
+            reason = self._read_only_reasons[state.session_id]
+            raise ValueError(_LOCK_MESSAGES[reason])
         session_lock = await self._get_session_lock(state.session_id)
 
         async with session_lock:
@@ -230,9 +245,12 @@ class JarvisEngine:
             runner.observe(
                 message=request.message,
                 session_id=state.session_id,
-                memories=[(m.memory_id, f"memory citation {m.memory_id}") for m in owned_memories[:8]],
+                memories=[(m.memory_id, m.content) for m in owned_memories[:8]],
                 history=[
-                    (str(item.get("turn_id") or index), f"{item.get('role', 'message')} history citation")
+                    (
+                        str(item.get("turn_id") or index),
+                        f"{item.get('role', 'message')}: {item.get('content', '')}",
+                    )
                     for index, item in enumerate(state.conversation_history[-8:])
                     if item.get("role") in {"user", "assistant"}
                 ],
@@ -314,8 +332,9 @@ class JarvisEngine:
                     raise ProviderError(str(exc)) from None
             reply = llm_result.reply if llm_result else local_reply
             if llm_result and llm_result.safe_mode:
-                reasons.append("inference " + llm_result.inference_status + "; text-only safe mode")
-                decision = "fail_closed"
+                # Provider unavailability is not a governance fail-closed.
+                if decision != "fail_closed":
+                    decision = "degraded"
             if decision == "fail_closed" and not llm_result:
                 reply = (
                     "I’m pausing consequential action because the available signals are uncertain. "
@@ -328,6 +347,8 @@ class JarvisEngine:
                     "or the signals are too uncertain for a DOS-lite v0 commit."
                 )
                 reasoning_trace.append("dos-lite challenge abstain applied")
+            elif decision == "degraded" and llm_result and llm_result.safe_mode:
+                reasoning_trace.append("provider availability degraded; inference not confirmed")
 
             # --- 5. REFLECT ---
             prepared_citations = runtime_context.pop("prepared_citations")
@@ -463,7 +484,7 @@ class JarvisEngine:
                 except Exception:
                     # The turn is stored, but no signed recall checkpoint was confirmed.
                     # Lock rather than continue with live state behind durable state.
-                    self.set_read_only(state.session_id)
+                    self.set_read_only(state.session_id, SessionLockReason.VERIFICATION)
                     raise RuntimeError("Recall checkpoint could not be confirmed; session locked") from None
 
             self._save_session(state)
@@ -491,7 +512,8 @@ class JarvisEngine:
                 model=turn.model,
                 cost_usd=turn.cost_usd,
                 latency_ms=turn.latency_ms,
-                read_only=decision in {"fail_closed", "abstain"},
+                read_only=decision in {"fail_closed", "abstain", "degraded"}
+                or bool(llm_result and llm_result.safe_mode),
                 cost_reported=llm_result.cost_reported if llm_result else True,
                 input_mode=request.input_mode,
                 provider_attempts=llm_result.attempts if llm_result else [],
@@ -502,6 +524,7 @@ class JarvisEngine:
                 correlation_id=correlation_id,
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
+                lock_reason=self.lock_reason(state.session_id),
                 deliberation=public_deliberation,
             )
 
@@ -514,6 +537,7 @@ class JarvisEngine:
         if state is None:
             raise ValueError("Session not found.")
 
+        lock_reason = self.lock_reason(session_id)
         return {
             "session_id": state.session_id,
             "user_id": state.user_id,
@@ -522,8 +546,9 @@ class JarvisEngine:
             "energy": state.energy,
             "confidence": state.confidence,
             "turn_count": state.turn_count,
-            "read_only": self.is_read_only(session_id),
-            "recovered": session_id in self._read_only_sessions,
+            "read_only": lock_reason is not None,
+            "lock_reason": lock_reason.value if lock_reason else None,
+            "recovered": lock_reason is SessionLockReason.RECOVERY,
             "memory_count": len(state.long_term_memory),
             "spiral_core": state.spiral_core.model_dump(),
             "emotion": state.emotion.model_dump(),
@@ -554,11 +579,26 @@ class JarvisEngine:
     def verify_audit(self, session_id: str) -> dict[str, Any]:
         return {"session_id": session_id, "valid": self.audit.verify(session_id)}
 
-    def set_read_only(self, session_id: str) -> None:
-        self._read_only_sessions.add(session_id)
+    def set_read_only(self, session_id: str, reason: SessionLockReason | str = SessionLockReason.CONFLICT) -> None:
+        locked = reason if isinstance(reason, SessionLockReason) else SessionLockReason(reason)
+        match locked:
+            case SessionLockReason.RECOVERY | SessionLockReason.CONFLICT | SessionLockReason.VERIFICATION:
+                if session_id not in self._read_only_reasons:
+                    self._read_only_reasons[session_id] = locked
+            case _:
+                assert_never(locked)
+
+    def lock_reason(self, session_id: str) -> SessionLockReason | None:
+        return self._read_only_reasons.get(session_id)
 
     def is_read_only(self, session_id: str) -> bool:
-        return session_id in self._read_only_sessions
+        return session_id in self._read_only_reasons
+
+    def authorize_session(self, session_id: str) -> None:
+        """Clear a conflict lock after a verified supersession. Recovery/verification stay locked."""
+
+        if self._read_only_reasons.get(session_id) is SessionLockReason.CONFLICT:
+            self._read_only_reasons.pop(session_id, None)
 
     def clear_memory(self, session_id: str) -> dict[str, str]:
         state = self.get_session(session_id)

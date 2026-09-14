@@ -117,6 +117,82 @@ def test_happy_path_commit_with_evidence() -> None:
     assert any(claim.tag is ClaimTag.SPECIFIED for claim in result.claims)
     assert any(claim.tag is ClaimTag.HYPOTHESIZED for claim in result.claims)
     assert DOS_LITE_LABEL in result.label
+    assert result.reply_coverage.complete
+    assert result.reply_coverage.matcher == "v0-token-overlap"
+
+
+COUNTEREXAMPLE_RESTATEMENT = "I'll help you build a safer planner with cited checkpoints."
+COUNTEREXAMPLE_EVIDENCED = "A cited plan is the safer next step for this session."
+
+
+def test_restatement_without_your_request_links_current_utterance() -> None:
+    """Counterexample 1: restating the user request never says 'your request'."""
+
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    reply = COUNTEREXAMPLE_RESTATEMENT
+    lowered = reply.lower()
+    assert "your request" not in lowered
+    assert "you said" not in lowered
+    assert "you asked" not in lowered
+    runner.evaluate(reply)
+    result = runner.commit()
+    reply_claims = [claim for claim in result.claims if claim.claim_id.startswith("claim-reply")]
+    assert reply_claims
+    assert result.reply_coverage.complete
+    assert result.reply_coverage.sentence_count == len(reply_claims)
+    linked = reply_claims[0]
+    assert linked.unsupported is False
+    assert linked.tag is ClaimTag.OBSERVED
+    assert "hist-current-utterance" in linked.evidence_ids
+
+
+def test_evidenced_answer_without_source_tokens_is_not_unsupported() -> None:
+    """Counterexample 2: evidenced sentences that never mention source tokens."""
+
+    runner = DeliberationRunner()
+    runner.observe(
+        message="What plan should we follow?",
+        session_id="s1",
+        memories=[("mem-plan", "Prefers cited plans.")],
+        emotion_rationale=["baseline emotional profile"],
+    )
+    runner.interpret(emotion_label="driven", intent="transform", phase="respond", confidence=0.82)
+    runner.infer()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    reply = COUNTEREXAMPLE_EVIDENCED
+    lowered = reply.lower()
+    assert "mem-plan" not in lowered
+    assert "memory" not in lowered
+    runner.evaluate(reply)
+    result = runner.commit()
+    reply_claim = next(claim for claim in result.claims if claim.claim_id.startswith("claim-reply"))
+    assert "mem-plan" not in reply_claim.text.lower()
+    assert reply_claim.unsupported is False
+    assert reply_claim.tag is ClaimTag.OBSERVED
+    assert any(item.startswith("mem-") for item in reply_claim.evidence_ids)
+    assert result.reply_coverage.complete
+    assert result.reply_coverage.sentence_count == 1
+    assert result.reply_coverage.tagged_count == 1
+    public = json.dumps(result.to_public_dict())
+    assert "Prefers cited plans" not in public
+    assert "match_text" not in public
+
+
+def test_whole_answer_coverage_accounts_for_every_reply_sentence() -> None:
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    runner.evaluate(
+        "I'll help you build a safer planner with cited checkpoints. Next we list the cited checkpoints."
+    )
+    result = runner.commit()
+    reply_claims = [claim for claim in result.claims if claim.claim_id.startswith("claim-reply")]
+    assert result.reply_coverage.sentence_count == 2
+    assert result.reply_coverage.tagged_count == 2
+    assert result.reply_coverage.complete
+    assert len(reply_claims) == 2
+    assert reply_claims[0].unsupported is False
+    assert {claim.claim_id for claim in reply_claims} == {"claim-reply-0", "claim-reply-1"}
 
 
 def test_conversational_gap_does_not_block_commit() -> None:
