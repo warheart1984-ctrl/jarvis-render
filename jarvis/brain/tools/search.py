@@ -16,7 +16,7 @@ import ipaddress
 import re
 import time
 from collections.abc import Callable
-from typing import Any, Protocol, assert_never
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -28,7 +28,6 @@ from jarvis.brain.tools.envelope import (
     ToolCallStatus,
     ToolName,
     fence_untrusted_data,
-    stub_tool_call,
     utc_now,
     validate_tool_arguments,
 )
@@ -355,61 +354,6 @@ def search_citation(receipt: SourceReceipt, *, session_id: str) -> dict[str, Any
     }
 
 
-async def invoke_tool(
-    name: str,
-    arguments: dict[str, Any],
-    *,
-    transaction_id: str,
-    correlation_id: str,
-) -> ToolCallRecord:
-    timeout = settings.search_timeout_seconds
-    attempts = settings.search_attempts
-    try:
-        tool = ToolName(name)
-        validated = validate_tool_arguments(name, arguments)
-    except ValueError as exc:
-        return ToolCallRecord(
-            tool_name=(name or "unknown")[:80] or "unknown",
-            arguments=dict(arguments or {}),
-            status=ToolCallStatus.INVALID,
-            transaction_id=transaction_id,
-            correlation_id=correlation_id,
-            timeout_seconds=timeout,
-            attempts=attempts,
-            attempt=0,
-            retryable=False,
-            error=str(exc),
-        )
-    match tool:
-        case ToolName.WEB_SEARCH:
-            return await run_web_search(
-                query=str(validated.get("query") or ""),
-                session_id="",
-                tenant_id="",
-                owner_sub="",
-                transaction_id=transaction_id,
-                correlation_id=correlation_id,
-                quota=lambda *_args: True,
-            )
-        case (
-            ToolName.CALCULATOR
-            | ToolName.CLOCK
-            | ToolName.WEATHER
-            | ToolName.DOCUMENT_RETRIEVAL
-            | ToolName.HEALTH
-        ):
-            return stub_tool_call(
-                tool,
-                transaction_id=transaction_id,
-                correlation_id=correlation_id,
-                arguments=validated,
-                timeout_seconds=timeout,
-                attempts=attempts,
-            )
-        case _:
-            assert_never(tool)
-
-
 async def maybe_web_search(
     *,
     message: str,
@@ -572,4 +516,3 @@ def quoted_search_payload(receipts: list[SourceReceipt]) -> dict[str, Any]:
             for item in receipts
         ]
     )
-

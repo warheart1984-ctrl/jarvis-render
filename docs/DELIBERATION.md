@@ -154,8 +154,32 @@ secrets, full pages, chain-of-thought, and `match_text`.
 
 If no search API key is configured, the adapter degrades (`unavailable`) the
 same way inference degrades: it is **not** mapped onto governance fail-closed.
-A deterministic `fake` backend exists for tests. Calculator, clock, weather,
-document retrieval, and health are named stubs on the same tool-call envelope.
+A deterministic `fake` backend exists for tests.
+
+## Local calculator and clock (v0)
+
+Calculator and clock/time are **working** local tools on the same `ToolCallRecord`
+envelope as web search. They run only on an explicit request (`calculate 2+2`,
+`what time is it`) — not on every turn. Results are DOS-lite `tool_external`
+evidence **before Commit**. Citation is not memory admission.
+`may_admit_retrieved_to_memory()` stays false. `JARVIS_GOVERNED_WRITES_ENABLED`
+stays off.
+
+Calculator is local, no network, and does not `eval` Python: a bounded AST
+arithmetic walker (max 120-character expressions, 1s timeout, magnitude and
+exponent caps). Invalid expressions fail closed (`invalid`). Clock returns a
+timezone-aware **UTC** timestamp. That is honest: v0 does not convert arbitrary
+zones and does **not** implement weather.
+
+Local facts are not web snippets, so they do not use the untrusted-external
+fence. They still cannot issue instructions, change governance, or write
+memory.
+
+**Shipped vs declared (v0 tool belt):**
+- **Shipped:** observe-only web search; local calculator; local clock/time.
+- **Declared:** health/status, Continuity read-only as a kit tool, tenant RAG /
+  document retrieval, vision/media, OTEM, weather.
+
 This is not unrestricted browse, not RAG, not OTEM, and not NLI.
 
 Claims that use retrieved evidence must cite a search receipt. Unsupported
@@ -165,6 +189,6 @@ factual/safety assertions still follow the live-path claim-class teeth
 ## Validation
 
 ```sh
-poetry run pytest tests/test_deliberation.py tests/test_web_search.py -v
+poetry run pytest tests/test_deliberation.py tests/test_web_search.py tests/test_calculator_clock.py -v
 ```
 

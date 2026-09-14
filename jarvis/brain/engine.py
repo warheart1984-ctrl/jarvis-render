@@ -32,11 +32,14 @@ from jarvis.brain.provenance import context_receipt, memory_reference
 from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
 from jarvis.brain.tools import (
-    evidence_from_search_hit,
+    citations_from_tool_record,
+    evidence_from_tool_record,
     may_admit_retrieved_to_memory,
+    maybe_calculator,
+    maybe_clock,
     maybe_web_search,
+    quoted_local_payload,
     quoted_search_payload,
-    search_citation,
 )
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
@@ -249,7 +252,7 @@ class JarvisEngine:
             runner = DeliberationRunner()
             turn_id = uuid4().hex
             correlation_id = uuid4().hex
-            # Observe-only search: explicit request only. Failure degrades; it is not fail-closed.
+            # Kit tools: explicit request only. Failure degrades; it is not fail-closed.
             search_record = await maybe_web_search(
                 message=request.message,
                 search_query=request.search_query,
@@ -261,16 +264,27 @@ class JarvisEngine:
                 quota=self.access.consume_quota,
                 backend=self.search_backend,
             )
-            if search_record is not None:
+            calc_record = await maybe_calculator(
+                message=request.message,
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
+            )
+            clock_record = await maybe_clock(
+                message=request.message,
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
+            )
+            tool_records = [item for item in (search_record, calc_record, clock_record) if item is not None]
+            for record in tool_records:
                 self.audit.append(
                     uuid4().hex,
                     state.session_id,
                     "tool_call",
-                    search_record.to_public_dict(),
+                    record.to_public_dict(),
                     turn_id=turn_id,
                 )
-                for hit in search_record.sources:
-                    runner.add_evidence(evidence_from_search_hit(hit))
+                for evidence in evidence_from_tool_record(record):
+                    runner.add_evidence(evidence)
             runner.observe(
                 message=request.message,
                 session_id=state.session_id,
@@ -325,11 +339,10 @@ class JarvisEngine:
             search_quotes = (
                 quoted_search_payload(search_record.sources) if search_record and search_record.sources else None
             )
-            search_citations = (
-                [search_citation(item, session_id=state.session_id) for item in search_record.sources]
-                if search_record
-                else None
-            )
+            local_quotes = quoted_local_payload(tool_records)
+            tool_citations: list[dict[str, Any]] = []
+            for record in tool_records:
+                tool_citations.extend(citations_from_tool_record(record, session_id=state.session_id))
             messages, runtime_context = build_chat_context(
                 state,
                 request,
@@ -339,8 +352,11 @@ class JarvisEngine:
                 speech_configured=bool(settings.nvidia_api_key),
                 previous=previous,
                 search_quotes=search_quotes or None,
-                search_citations=search_citations or None,
+                search_citations=tool_citations or None,
                 search_status=search_record.status.value if search_record else "not_requested",
+                local_tool_quotes=local_quotes,
+                calculator_status=calc_record.status.value if calc_record else "not_requested",
+                clock_status=clock_record.status.value if clock_record else "not_requested",
             )
             if request.recall_previous:
                 self.audit.append(
@@ -419,15 +435,19 @@ class JarvisEngine:
             for message in state.conversation_history[-2:]:
                 message["turn_id"] = turn_id
 
-            snippets = [hit.excerpt for hit in search_record.sources] if search_record else []
+            snippets: list[str] = []
+            for record in tool_records:
+                snippets.extend(hit.excerpt for hit in record.sources)
+                iso = record.result.get("iso8601")
+                if isinstance(iso, str) and len(iso) >= 8:
+                    snippets.append(iso)
+            public_tool_calls = [record.to_public_dict() for record in tool_records]
             memory_entry = (
                 extract_memory(state, request.message, reply)
                 if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible"
                 else None
             )
-            if memory_entry and snippets and not may_admit_retrieved_to_memory(
-                user_requested=request.memory_consent
-            ):
+            if memory_entry and snippets and not may_admit_retrieved_to_memory(user_requested=request.memory_consent):
                 if any(snippet and snippet in memory_entry.content for snippet in snippets):
                     memory_entry = None
             if memory_entry:
@@ -453,7 +473,7 @@ class JarvisEngine:
                     {"type": "deliberation", "version": "v0-dos-lite", "trace": public_deliberation},
                     {
                         "type": "tool_calls",
-                        "calls": [search_record.to_public_dict()] if search_record else [],
+                        "calls": public_tool_calls,
                     },
                 ],
                 content=reply,
@@ -497,7 +517,7 @@ class JarvisEngine:
                         "runtime_context": runtime_context,
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
                         "deliberation": public_deliberation,
-                        "tool_calls": [search_record.to_public_dict()] if search_record else [],
+                        "tool_calls": public_tool_calls,
                     },
                 },
                 {
@@ -576,7 +596,7 @@ class JarvisEngine:
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
                 lock_reason=self.lock_reason(state.session_id),
-                tool_calls=[search_record.to_public_dict()] if search_record else [],
+                tool_calls=public_tool_calls,
                 deliberation=public_deliberation,
             )
 
