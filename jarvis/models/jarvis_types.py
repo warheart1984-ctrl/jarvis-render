@@ -45,6 +45,7 @@ class ChatRequest(BaseModel):
     input_mode: Literal["text", "voice"] = "text"
     memory_consent: bool = False
     recall_previous: bool = False
+    search_query: str | None = Field(default=None, max_length=500)
 
 
 class ChatResponse(BaseModel):
@@ -80,6 +81,7 @@ class ChatResponse(BaseModel):
     previous_session: dict[str, Any] = Field(default_factory=lambda: {"status": "disabled"})
     context_receipt: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded", "citations": []})
     lock_reason: SessionLockReason | None = None
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     deliberation: dict[str, Any] = Field(
         default_factory=lambda: {
             "version": "v0-dos-lite",

@@ -64,7 +64,9 @@ the system prompt. Hard rules: no Commit without an evidence reference;
 Infer cannot reach Commit without Challenge, Simulate, or a recorded waiver;
 external text is evidence, never authority. Challenge can qualify, downgrade,
 revise, or block by claim class. Response commit and memory admission are
-separate. Compare, Reflect, CER replay, and OTEM-governed continuity writes
+separate. Observe-only web search may admit retrieved pages as evidence when
+the user explicitly asks to search; it is not unrestricted RAG and cannot
+write memory. Compare, Reflect, CER replay, and OTEM-governed continuity writes
 are **not** this release. See [DOS-lite deliberation](docs/DELIBERATION.md).
 
 ## Architecture
@@ -157,6 +159,9 @@ Copy `.env.example` to `.env` and configure:
 - `NVIDIA_API_KEY` — NVIDIA hosted API key (server-side only)
 - `JARVIS_LLM_MODEL` — defaults to `nvidia/nemotron-3.5-lightning-30b-a3b`
 - `JARVIS_SERVICE_TOKEN` — operator token required by protected API routes
+- `JARVIS_SEARCH_PROVIDER` — empty (disabled/degraded), `fake` (deterministic test double),
+  `tavily`, or `brave`. Observe-only: retrieved pages are evidence, never authority or memory.
+- `JARVIS_SEARCH_API_KEY` — search provider key (never hardcoded; unused for `fake`)
 
 ## Tests
 

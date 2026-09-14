@@ -46,6 +46,7 @@ def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None =
                 ),
                 "deliberation": payload.get("deliberation")
                 or {"version": "v0-dos-lite", "status": "not_recorded", "stages": [], "claims": []},
+                "tool_calls": payload.get("tool_calls") or [],
             }
         )
 

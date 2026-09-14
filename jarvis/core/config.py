@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
@@ -110,6 +110,36 @@ class JarvisSettings(BaseSettings):
     visitor_session_hours: int = Field(default=24, ge=1, le=168)
     visitor_chat_daily_limit: int = Field(default=100, ge=1, le=10000)
     visitor_voice_daily_limit: int = Field(default=60, ge=1, le=10000)
+
+    # Observe-only web search. Empty provider/key degrades; it never fail-closes governance.
+    search_provider: str = ""
+    search_api_key: str = ""
+    search_base_url: str = ""
+    search_timeout_seconds: float = Field(default=8.0, ge=1, le=30)
+    search_attempts: int = Field(default=2, ge=1, le=2)
+    search_max_results: int = Field(default=5, ge=1, le=5)
+    search_max_excerpt_chars: int = Field(default=240, ge=40, le=240)
+    search_rate_limit: int = Field(default=8, ge=1, le=60)
+    search_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
+
+    @field_validator("search_base_url")
+    @classmethod
+    def validate_search_endpoint(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            return ""
+        parsed = urlsplit(cleaned)
+        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or (parsed.scheme != "https" and not (parsed.scheme == "http" and local))
+        ):
+            raise ValueError("Search base URL must be HTTPS, or HTTP on loopback; do not embed credentials.")
+        return cleaned.rstrip("/")
 
     def governed_writes_allowed(self) -> bool:
         # Production promotion requires EMR gates, which are not implemented yet.

@@ -381,6 +381,8 @@ def admit_external_suggestion(
     summary: str,
     evidence_id: str | None = None,
     requested_authority: bool = False,
+    match_text: str = "",
+    citation_id: str | None = None,
 ) -> EvidenceRef:
     """Admit tool/RAG/other-agent text as evidence only (never authority)."""
 
@@ -395,6 +397,8 @@ def admit_external_suggestion(
         authority=False,
         source=source,
         admission=admission,
+        citation_id=citation_id,
+        match_text=_clip(match_text) if match_text else "",
     )
 
 
@@ -1031,6 +1035,8 @@ class DeliberationRunner:
                 summary=item.summary,
                 evidence_id=item.evidence_id,
                 requested_authority=item.authority,
+                match_text=item.match_text,
+                citation_id=item.citation_id,
             )
         if all(existing.evidence_id != item.evidence_id for existing in self.evidence):
             self.evidence.append(item)
