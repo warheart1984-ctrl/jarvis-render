@@ -52,12 +52,9 @@ _LOCK_MESSAGES = {
     SessionLockReason.RECOVERY: (
         "Session is read-only after verified recovery (reason=recovery). Start a new chat to continue."
     ),
-    SessionLockReason.CONFLICT: (
-        "Session is read-only pending conflict resolution (reason=conflict)."
-    ),
+    SessionLockReason.CONFLICT: ("Session is read-only pending conflict resolution (reason=conflict)."),
     SessionLockReason.VERIFICATION: (
-        "Session is read-only because audit or turn verification failed (reason=verification). "
-        "Start a new chat."
+        "Session is read-only because audit or turn verification failed (reason=verification). Start a new chat."
     ),
 }
 
@@ -364,7 +361,9 @@ class JarvisEngine:
                     reply = runner.gated_reply
                 if runner.challenge_action is not None:
                     decision = map_challenge_decision(runner.challenge_action, decision)
-                if runner.response_commit == "refused" and decision == "answer":
+                if runner.response_commit == "abstained" or runner.challenge_action is ChallengeAction.ABSTAIN:
+                    decision = "abstain"
+                elif runner.response_commit == "refused" and decision == "answer":
                     decision = "fail_closed"
                     reasons.append("safety-critical claim lacked verification")
                 deliberation = runner.commit()

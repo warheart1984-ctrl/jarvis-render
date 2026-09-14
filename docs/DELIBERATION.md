@@ -37,8 +37,10 @@ v0 implements the first ring, plus a v0 **claim-class gate** on Challenge:
    `authority=false`. The runner ignores a requested authority flag.
 4. **Challenge has teeth by class.** Conversational gaps are optional.
    Interpretive gaps stay hypothesized. Factual gaps qualify. Causal gaps
-   revise. Safety-critical gaps block. `require_evidence` is no longer a
-   silent `committed: yes`.
+   revise. Safety-critical gaps block. `require_evidence` plus unsupported
+   factual/safety claims cannot `response_commit=committed` with the raw
+   assertion treated as supported. Abstain/refuse envelopes must not say
+   `committed: true`.
 5. **Response commit and memory admission are separate.** Jarvis may say
    “I suspect X” on a qualified/revised response without being allowed to
    store “X is true.”
@@ -75,11 +77,14 @@ refs, then refuses `Commit` when a hard rule fails:
 4. The final envelope carries CRS-style claim tags — Observed / Specified /
    Hypothesized — plus unsupported-claim warnings when a claim lacks evidence.
    Reply sentences are linked to admitted evidence with a v0 token-overlap
-   matcher (not NLI): a restatement of the current utterance can count as
-   history evidence without saying “your request”, and a reply that shares
-   content words with a memory summary can count without naming `memory_id`.
+   matcher (not NLI): a restatement of the current utterance can be *cited*
+   as history without saying “your request”, and a reply that shares
+   content words with a memory summary can be cited without naming `memory_id`.
+   Matching is not justification. The current utterance is context, not
+   automatic support for factual, causal, or safety-critical claims.
    Restatement glue and overlap with a negated source do not count as
-   support. Whole-answer coverage is a gate: every reply sentence (and each
+   support. Token overlap may identify a candidate citation; it does not
+   verify a safety-critical assertion. Whole-answer coverage is a gate: every reply sentence (and each
    240-character window of a longer sentence) must be tagged, or the turn
    cannot `response_commit=committed`. Unchecked text is listed uncovered.
    That is still not proof the hosted model used the citation.

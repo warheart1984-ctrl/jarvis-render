@@ -62,3 +62,19 @@ test("DOS-lite claim tags render as text and do not oversell a kernel", () => {
   assert.equal(deliberationSummary({}), "not run");
   assert.match(coverageLabel({sentence_count: 3, tagged_count: 2, complete: false, matcher: "v0-token-overlap"}), /incomplete/);
 });
+test("abstain envelope renders committed no, not yes", () => {
+  const view = deliberationView({
+    label: "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel",
+    status: "abstained", committed: false, challenge_action: "abstain",
+    response_commit: "abstained", memory_admission: "held",
+    stages: [{name: "observe"}, {name: "challenge"}, {name: "commit"}],
+    claims: [],
+    unsupported_claim_warnings: [],
+    reply_coverage: {sentence_count: 1, tagged_count: 1, uncovered: [], complete: true, matcher: "v0-token-overlap"}
+  });
+  const text = allText(view);
+  assert.match(text, /abstain/);
+  assert.match(text, /held/);
+  assert.match(text, /\bno\b/);
+  assert.doesNotMatch(text, /\byes\b/);
+});

@@ -180,13 +180,15 @@ def test_evidenced_answer_without_source_tokens_is_not_unsupported() -> None:
 
 
 PHRASE_TRIGGER_SAFETY = (
-    "You asked for a safer planner and this provides consistent safety "
-    "boundaries for production deploy."
+    "You asked for a safer planner and this provides consistent safety boundaries for production deploy."
 )
 PHRASE_TRIGGER_SAFETY_TURN = (
-    "You asked for a safer planner. This provides consistent safety "
-    "boundaries for production deploy."
+    "You asked for a safer planner. This provides consistent safety boundaries for production deploy."
 )
+YOU_ASKED_AND_SAFETY = "You asked, and this provides consistent safety boundaries for production deploy."
+UTTERANCE_DENIES_GUARANTEED_SAFETY = "There is not guaranteed safety for production deploy."
+ANSWER_ASSERTS_GUARANTEED_SAFETY = "This provides guaranteed safety for production deploy."
+UNSUPPORTED_SAFETY_ASSERTION = "This provides consistent safety boundaries for production deploy."
 NEGATED_SOURCE = "This does not provide consistent safety boundaries for production deploy."
 NEGATED_CLAIM = "This provides consistent safety boundaries for production deploy."
 
@@ -215,13 +217,54 @@ def test_you_asked_turn_still_blocks_unsupported_safety_sentence() -> None:
     runner.evaluate(PHRASE_TRIGGER_SAFETY_TURN)
     result = runner.commit()
     safety = next(
-        c
-        for c in result.claims
-        if c.claim_id.startswith("claim-reply") and c.claim_class.value == "safety_critical"
+        c for c in result.claims if c.claim_id.startswith("claim-reply") and c.claim_class.value == "safety_critical"
     )
     assert safety.support.value == "missing"
     assert result.response_commit == "refused"
     assert result.committed is False
+
+
+def test_you_asked_and_prefix_does_not_support_unverified_safety() -> None:
+    """Same safety assertion prefixed with 'You asked, and …' must not become supported."""
+
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    assert "You asked, and" in YOU_ASKED_AND_SAFETY
+    runner.evaluate(YOU_ASKED_AND_SAFETY)
+    result = runner.commit()
+    safety = next(c for c in result.claims if c.claim_class.value == "safety_critical")
+    assert safety.support.value == "missing"
+    assert safety.action is ChallengeAction.BLOCK
+    assert result.response_commit != "committed"
+    assert result.committed is False
+    assert result.memory_admission == "blocked"
+    public = json.dumps(result.to_public_dict())
+    assert '"committed": true' not in public
+    assert "match_text" not in public
+
+
+def test_utterance_denying_guaranteed_safety_is_not_support() -> None:
+    """Overlap with a NEGATING source (the current input) is not support."""
+
+    runner = DeliberationRunner()
+    runner.observe(
+        message=UTTERANCE_DENIES_GUARANTEED_SAFETY,
+        session_id="s1",
+        emotion_rationale=["baseline emotional profile"],
+    )
+    runner.interpret(emotion_label="driven", intent="transform", phase="respond", confidence=0.82)
+    runner.infer()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    runner.evaluate(ANSWER_ASSERTS_GUARANTEED_SAFETY)
+    result = runner.commit()
+    safety = next(c for c in result.claims if c.claim_class.value == "safety_critical")
+    assert "hist-current-utterance" not in safety.evidence_ids or safety.support.value == "missing"
+    assert safety.support.value == "missing"
+    assert result.response_commit != "committed"
+    assert result.committed is False
+    assert result.memory_admission == "blocked"
+    public = json.dumps(result.to_public_dict())
+    assert "match_text" not in public
 
 
 def test_negated_source_overlap_is_not_support() -> None:
@@ -292,9 +335,7 @@ def test_over_240_char_sentence_tail_is_not_skipped() -> None:
 def test_whole_answer_coverage_accounts_for_every_reply_sentence() -> None:
     runner = _runner_with_evidence()
     runner.challenge(uncertainty=0.18, stress=0.1)
-    runner.evaluate(
-        "I'll help you build a safer planner with cited checkpoints. Next we list the cited checkpoints."
-    )
+    runner.evaluate("I'll help you build a safer planner with cited checkpoints. Next we list the cited checkpoints.")
     result = runner.commit()
     reply_claims = [claim for claim in result.claims if claim.claim_id.startswith("claim-reply")]
     assert result.reply_coverage.sentence_count == 2
@@ -330,6 +371,83 @@ def test_require_evidence_downgrades_instead_of_silent_commit() -> None:
     assert result.challenge_action is ChallengeAction.DOWNGRADE
     assert result.response_commit == "committed"
     assert any("require_evidence resolved to downgrade" in reason for reason in result.challenge_reasons)
+
+
+def test_require_evidence_unsupported_factual_is_not_a_committed_raw_assertion() -> None:
+    """REQUIRE_EVIDENCE must have live-path teeth: overlapping the question is not support."""
+
+    runner = DeliberationRunner()
+    runner.observe(message="What is the capital of France?", session_id="s1")
+    runner.interpret(emotion_label="curious", intent="transform", phase="reason", confidence=0.7)
+    runner.infer()
+    runner.challenge(uncertainty=0.3, stress=0.1)
+    assert runner.challenge_action is ChallengeAction.REQUIRE_EVIDENCE
+    raw = "Paris is the capital of France."
+    runner.evaluate(raw)
+    result = runner.commit()
+    factual = next(
+        c for c in result.claims if c.claim_id.startswith("claim-reply") and c.claim_class.value == "factual"
+    )
+    assert factual.support.value != "present"
+    assert result.response_commit != "committed"
+    assert result.response_commit == "qualified"
+    assert QUALIFY_NOTE in runner.gated_reply
+    assert runner.gated_reply != raw
+    public = json.dumps(result.to_public_dict())
+    assert "match_text" not in public
+
+
+def test_require_evidence_unsupported_safety_is_not_committed() -> None:
+    runner = DeliberationRunner()
+    runner.observe(message="What is true here?", session_id="s1")
+    runner.interpret(emotion_label="curious", intent="transform", phase="reason", confidence=0.7)
+    runner.infer()
+    runner.challenge(uncertainty=0.3, stress=0.1)
+    assert runner.challenge_action is ChallengeAction.REQUIRE_EVIDENCE
+    runner.evaluate(UNSUPPORTED_SAFETY_ASSERTION)
+    result = runner.commit()
+    safety = next(c for c in result.claims if c.claim_class.value == "safety_critical")
+    assert safety.support.value == "missing"
+    assert result.response_commit == "refused"
+    assert result.committed is False
+    assert result.memory_admission == "blocked"
+    assert runner.gated_reply == BLOCK_REPLY
+    public = json.dumps(result.to_public_dict())
+    assert '"committed": true' not in public
+
+
+def test_unsupported_safety_assertion_by_itself_is_refused() -> None:
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    runner.evaluate(UNSUPPORTED_SAFETY_ASSERTION)
+    result = runner.commit()
+    assert result.response_commit == "refused"
+    assert result.committed is False
+    assert result.memory_admission == "blocked"
+    assert runner.gated_reply == BLOCK_REPLY
+
+
+def test_abstain_envelope_is_not_committed() -> None:
+    runner = DeliberationRunner()
+    runner.observe(message="Let's explore a bit.", session_id="s1")
+    runner.interpret(emotion_label="calm", intent="transform", phase="orient", confidence=0.7)
+    runner.infer()
+    runner.challenge(uncertainty=0.3, stress=0.1)
+    runner.challenge_action = ChallengeAction.ABSTAIN
+    runner.evaluate(
+        "I'm abstaining from a committed answer. The available evidence is too thin "
+        "or the signals are too uncertain for a DOS-lite v0 commit."
+    )
+    result = runner.commit()
+    public = result.to_public_dict()
+    assert result.challenge_action is ChallengeAction.ABSTAIN
+    assert result.response_commit == "abstained"
+    assert result.committed is False
+    assert result.status == "abstained"
+    assert public["committed"] is False
+    assert public["response_commit"] == "abstained"
+    assert '"committed": true' not in json.dumps(public)
+    assert result.memory_admission != "eligible"
 
 
 def test_factual_gap_qualifies_response() -> None:
