@@ -44,6 +44,8 @@ def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None =
                 "context_receipt": payload.get("runtime_context", {}).get(
                     "context_receipt", {"status": "not_recorded", "citations": []}
                 ),
+                "deliberation": payload.get("deliberation")
+                or {"version": "v0-dos-lite", "status": "not_recorded", "stages": [], "claims": []},
             }
         )
 

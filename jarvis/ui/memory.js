@@ -51,6 +51,39 @@ export function receiptView(receipt, turnId = "") {
   detail.append(list);
   return detail;
 }
+export function deliberationSummary(deliberation) {
+  const stages = deliberation?.stages || [];
+  if (!stages.length) return "not run";
+  return stages.map(stage => stage.name).join(" → ");
+}
+export function deliberationView(deliberation) {
+  const detail = element("details", undefined, "context-receipt deliberation");
+  detail.append(element("summary", "DOS-lite v0 · " + deliberationSummary(deliberation)));
+  detail.append(element("p", deliberation?.label
+    || "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel, trained judge, or private chain-of-thought engine", "hint"));
+  if (deliberation?.challenge_action) {
+    detail.append(fields([
+      ["Challenge", deliberation.challenge_action],
+      ["Committed", deliberation.committed ? "yes" : "no"],
+      ["Status", deliberation.status || "not_run"],
+    ]));
+  }
+  const claims = deliberation?.claims || [];
+  if (claims.length) {
+    const list = element("ol", undefined, "citation-list claim-list");
+    for (const claim of claims) {
+      const item = element("li");
+      item.append(element("p", `${(claim.tag || "hypothesized").toUpperCase()} · ${claim.text || ""}`));
+      if (claim.unsupported) item.append(element("p", "Unsupported: no evidence reference for this claim.", "hint"));
+      list.append(item);
+    }
+    detail.append(list);
+  }
+  for (const warning of deliberation?.unsupported_claim_warnings || []) {
+    detail.append(element("p", warning, "hint"));
+  }
+  return detail;
+}
 export function renderInspection(root, data) {
   root.replaceChildren();
   if (!data || data.status !== "available") {
@@ -85,6 +118,9 @@ export function renderInspection(root, data) {
   }
   const turns = element("section");
   turns.append(element("h3", "Turn citations"), element("p", "Latest 20 turns. Receipts describe context supplied at that time, not current source availability. Older turns without receipts are marked not recorded.", "hint"));
-  for (const turn of [...data.turns].reverse()) turns.append(receiptView(turn.context_receipt, turn.turn_id));
+  for (const turn of [...data.turns].reverse()) {
+    turns.append(receiptView(turn.context_receipt, turn.turn_id));
+    if (turn.deliberation) turns.append(deliberationView(turn.deliberation));
+  }
   grid.append(memories, turns); root.append(grid);
 }
