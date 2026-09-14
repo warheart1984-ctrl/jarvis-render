@@ -10,11 +10,11 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from jarvis.auth import AccessStore, cookie_name, csrf_token
+from jarvis.auth import cookie_args, cookie_name, csrf_token
 from jarvis.brain.engine import JarvisEngine
 from jarvis.brain.llm import LLMResult
 from jarvis.core.config import settings
-from jarvis.oauth import authorization_url, verified_login
+from jarvis.oauth import authorization_url, decode_jwt, verified_login
 from jarvis.persistence import JarvisStore
 
 KEY = "test-service-token"
@@ -109,6 +109,19 @@ def test_verified_login_requires_ledger_audience_scopes_and_matching_subject(mon
     assert scopes == SCOPES
     assert expires > time.time()
 
+    def decode_permissions(token: str, *, audience: str, nonce: str | None = None) -> dict:
+        if token == "id":
+            return {"sub": "google-oauth2|alice", "email": "alice@gmail.com", "nonce": "n"}
+        return {
+            "sub": "google-oauth2|alice",
+            "permissions": ["memory.read", "memory.write"],
+            "exp": int(time.time()) + 60,
+        }
+
+    monkeypatch.setattr("jarvis.oauth.decode_jwt", decode_permissions)
+    _, _, permission_scopes, _ = verified_login("id", "access", "n")
+    assert permission_scopes == SCOPES
+
     def decode_read_only(token: str, *, audience: str, nonce: str | None = None) -> dict:
         if token == "id":
             return {"sub": "google-oauth2|alice", "email": "alice@gmail.com", "nonce": "n"}
@@ -132,6 +145,68 @@ def test_verified_login_requires_ledger_audience_scopes_and_matching_subject(mon
         verified_login("id", "access", "n")
 
 
+def start_login(client):
+    started = client.get("/auth/login", follow_redirects=False)
+    assert started.status_code == 303
+    hop = started.headers["location"]
+    assert hop.startswith("/auth/continue?")
+    continued = client.get(hop, follow_redirects=False)
+    assert continued.status_code == 302
+    location = continued.headers["location"]
+    assert "client-secret" not in location
+    return location
+
+
+def test_identity_issuers_accept_auth0_trailing_slash(monkeypatch):
+    enable_oauth(monkeypatch)
+    monkeypatch.setattr(settings, "oidc_issuer", "https://auth.example.com")
+    assert settings.identity_issuer() == "https://auth.example.com"
+    assert settings.identity_issuers() == ("https://auth.example.com", "https://auth.example.com/")
+    monkeypatch.setattr(settings, "oidc_issuer", "https://auth.example.com/")
+    assert settings.identity_issuer() == "https://auth.example.com"
+    assert "https://auth.example.com/" in settings.identity_issuers()
+
+
+def test_decode_jwt_allows_issuer_with_or_without_trailing_slash(monkeypatch):
+    enable_oauth(monkeypatch)
+    monkeypatch.setattr(settings, "oidc_issuer", "https://auth.example.com")
+    captured: dict[str, object] = {}
+
+    class _Key:
+        key = "public-key"
+
+    class _Client:
+        def get_signing_key_from_jwt(self, token: str) -> _Key:
+            return _Key()
+
+    def fake_decode(token, key, algorithms, audience, issuer, leeway, options):
+        captured["issuer"] = issuer
+        return {"sub": "google-oauth2|alice", "exp": int(time.time()) + 60, "iat": int(time.time())}
+
+    monkeypatch.setattr("jarvis.oauth._jwk_client", lambda url: _Client())
+    monkeypatch.setattr("jarvis.oauth.jwt.decode", fake_decode)
+    decode_jwt("token", audience="web-client")
+    assert captured["issuer"] == ("https://auth.example.com", "https://auth.example.com/")
+
+
+def test_https_flow_cookie_is_host_prefixed(monkeypatch):
+    enable_oauth(monkeypatch)
+    monkeypatch.setattr(settings, "public_origin", "https://jarvis-avfy.onrender.com")
+    assert cookie_name(flow=True) == "__Host-jarvis-login"
+    args = cookie_args(flow=True, max_age=300)
+    assert args["secure"] is True
+    assert args["samesite"] == "lax"
+    assert args["path"] == "/"
+    assert "domain" not in args
+
+
+def test_login_sets_flow_cookie_on_same_origin_hop(oauth_client):
+    client, _engine = oauth_client
+    started = client.get("/auth/login", follow_redirects=False)
+    assert started.status_code == 303
+    assert cookie_name(flow=True) in started.headers.get("set-cookie", "")
+
+
 def test_pkce_callback_sets_session_cookie_not_tokens(oauth_client, monkeypatch):
     client, engine = oauth_client
     monkeypatch.setattr(
@@ -142,10 +217,7 @@ def test_pkce_callback_sets_session_cookie_not_tokens(oauth_client, monkeypatch)
         "jarvis.routes.auth.verified_login",
         lambda *args, **kwargs: ("google-oauth2|alice", "alice@gmail.com", SCOPES, int(time.time()) + 3600),
     )
-    started = client.get("/auth/login", follow_redirects=False)
-    assert started.status_code == 302
-    location = started.headers["location"]
-    assert "client-secret" not in location
+    location = start_login(client)
     state = parse_qs(urlparse(location).query)["state"][0]
     finished = client.get(f"/auth/callback?code=auth-code&state={state}", follow_redirects=False)
     assert finished.status_code == 303
@@ -159,6 +231,36 @@ def test_pkce_callback_sets_session_cookie_not_tokens(oauth_client, monkeypatch)
     assert "memory.read" in me["scopes"]
     assert me["csrf"]
     assert "access" not in str(me)
+
+
+def test_callback_without_flow_cookie_fails(oauth_client, monkeypatch):
+    client, _engine = oauth_client
+    location = start_login(client)
+    state = parse_qs(urlparse(location).query)["state"][0]
+    client.cookies.clear()
+    finished = client.get(f"/auth/callback?code=auth-code&state={state}", follow_redirects=False)
+    assert finished.status_code == 303
+    assert finished.headers["location"] == "/ui/?login=failed"
+
+
+def test_callback_idp_error_fails_without_token_exchange(oauth_client, monkeypatch):
+    client, _engine = oauth_client
+    exchange = AsyncMock()
+    monkeypatch.setattr("jarvis.routes.auth.exchange_code", exchange)
+    finished = client.get("/auth/callback?error=access_denied&state=abc", follow_redirects=False)
+    assert finished.status_code == 303
+    assert finished.headers["location"] == "/ui/?login=failed"
+    exchange.assert_not_called()
+
+
+def test_continue_rejects_open_redirect(oauth_client):
+    client, _engine = oauth_client
+    evil = client.get(
+        "/auth/continue?to=https://evil.example/authorize?client_id=web-client",
+        follow_redirects=False,
+    )
+    assert evil.status_code == 303
+    assert evil.headers["location"] == "/ui/?login=failed"
 
 
 def test_oauth_visitors_are_isolated_and_operator_token_still_works(oauth_client):

@@ -50,7 +50,7 @@ def _jwk_client(url: str) -> jwt.PyJWKClient:
 
 
 def _scopes(claims: dict[str, Any]) -> frozenset[str]:
-    value = claims.get("scope", claims.get("scp", []))
+    value = claims.get("scope", claims.get("scp", claims.get("permissions", [])))
     if isinstance(value, str):
         return frozenset(item for item in value.split() if item)
     if isinstance(value, list):
@@ -65,7 +65,7 @@ def decode_jwt(token: str, *, audience: str, nonce: str | None = None) -> dict[s
         key,
         algorithms=["RS256", "ES256"],
         audience=audience,
-        issuer=settings.identity_issuer(),
+        issuer=settings.identity_issuers(),
         leeway=30,
         options={"require": ["exp", "iat", "sub"]},
     )

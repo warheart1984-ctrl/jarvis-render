@@ -128,14 +128,18 @@ class JarvisSettings(BaseSettings):
         )
 
     def identity_issuer(self) -> str:
-        issuer = self.oidc_issuer.strip()
+        issuer = self.oidc_issuer.strip().rstrip("/")
         return issuer or "https://accounts.google.com"
 
+    def identity_issuers(self) -> tuple[str, ...]:
+        issuer = self.identity_issuer()
+        return (issuer, issuer + "/")
+
     def authorize_endpoint(self) -> str:
-        return self.oidc_authorize_url.strip() or f"{self.identity_issuer().rstrip('/')}/authorize"
+        return self.oidc_authorize_url.strip() or f"{self.identity_issuer()}/authorize"
 
     def token_endpoint(self) -> str:
-        return self.oidc_token_url.strip() or f"{self.identity_issuer().rstrip('/')}/oauth/token"
+        return self.oidc_token_url.strip() or f"{self.identity_issuer()}/oauth/token"
 
     def callback_url(self) -> str:
         return self.public_origin.rstrip("/") + "/auth/callback"
