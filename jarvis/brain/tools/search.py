@@ -1,6 +1,10 @@
-"""Observe-only web search: retrieve and cite, never instruct, govern, or remember.
+"""Observe-only web search: cite provider snippets, never instruct, govern, or remember.
 
-Retrieved pages are TOOL_EXTERNAL evidence. They cannot issue commands, change
+v0 consumes the search provider's JSON only (Tavily, Brave, or a fake). It does
+not GET target pages. SSRF-on-fetch of hit URLs is therefore not the live
+surface; any later fetch-this-URL path must add SSRF protections before it ships.
+
+Provider snippets are TOOL_EXTERNAL evidence. They cannot issue commands, change
 governance state, or become memory. Search runs only on an explicit user request
 or a gated ``search_query`` field — not on every question.
 """
@@ -50,7 +54,7 @@ class SearchBackend(Protocol):
 
 
 class FakeSearchBackend:
-    """Deterministic, provider-free test double. Never a live web page."""
+    """Deterministic, provider-free test double. Never HTTP, never a live web page."""
 
     provider = "fake"
     model = "web-search-v0-fake"
@@ -94,7 +98,12 @@ class SearchUnavailable(RuntimeError):
 
 
 class HttpSearchBackend:
-    """Tavily or Brave JSON search over the existing httpx client."""
+    """Tavily or Brave JSON search. HTTP is only sent to the configured provider ``base_url``.
+
+    Result hit URLs are parsed from the JSON body and never requested. Do not add
+    a page-fetch path here without SSRF protections (resolve-and-check IP, block
+    loopback/link-local/RFC1918/ULA, metadata hosts, credentials, non-http(s)).
+    """
 
     def __init__(self, provider: str, base_url: str, api_key: str, timeout: float) -> None:
         self.provider = provider
@@ -103,6 +112,16 @@ class HttpSearchBackend:
         self.api_key = api_key
         self.timeout = timeout
 
+    def _provider_endpoint(self, path: str) -> str:
+        """Build a URL that stays on the configured search provider host."""
+
+        expected = urlsplit(self.base_url)
+        target = self.base_url + path
+        actual = urlsplit(target)
+        if not expected.hostname or actual.scheme != expected.scheme or actual.netloc != expected.netloc:
+            raise SearchUnavailable("refusing to call a host other than the configured search provider", retryable=False)
+        return target
+
     async def search(self, query: str, *, max_results: int) -> list[dict[str, str]]:
         headers: dict[str, str] = {}
         try:
@@ -110,14 +129,14 @@ class HttpSearchBackend:
                 if self.provider == "brave":
                     headers["X-Subscription-Token"] = self.api_key
                     response = await client.get(
-                        self.base_url + "/res/v1/web/search",
+                        self._provider_endpoint("/res/v1/web/search"),
                         params={"q": query, "count": max_results},
                         headers=headers,
                     )
                 else:
                     # Tavily-compatible POST. Key is sent as configured by the vendor, never logged.
                     response = await client.post(
-                        self.base_url + "/search",
+                        self._provider_endpoint("/search"),
                         json={
                             "api_key": self.api_key,
                             "query": query,
@@ -182,16 +201,42 @@ def _host_matches(host: str, patterns: list[str]) -> bool:
     return False
 
 
-def _private_or_loopback(host: str) -> bool:
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse an IP literal. Hostnames are not DNS-resolved (v0 never fetches hit URLs)."""
+
     try:
-        ip = ipaddress.ip_address(host)
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(host)
     except ValueError:
-        return False
-    return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast)
+        if host.isdigit() and len(host) <= 10:
+            try:
+                n = int(host, 10)
+                if 0 <= n <= 0xFFFFFFFF:
+                    return ipaddress.IPv4Address(n)
+            except (ValueError, ipaddress.AddressValueError):
+                return None
+        return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+
+def _non_global_ip_literal(host: str) -> bool:
+    """Reject IP literals that are not globally routable.
+
+    Numeric policy (stdlib ``ipaddress``, not hostname vibes): RFC1918, loopback,
+    link-local (including 169.254.0.0/16), unspecified, multicast, reserved,
+    IPv6 unique-local / loopback, and IPv4-mapped forms of those ranges.
+    """
+
+    ip = _ip_literal(host)
+    return ip is not None and not ip.is_global
 
 
 def url_permitted(url: str) -> bool:
-    """HTTP(S) only, deny-list wins, optional allow-list, no private/loopback IPs."""
+    """HTTP(S) only, deny-list wins, optional allow-list, no non-global IP literals.
+
+    Used to decide whether a provider-JSON hit URL may enter the evidence corpus.
+    This is not a fetch allow-list: Jarvis does not retrieve target pages.
+    """
 
     parsed = urlsplit(url)
     host = (parsed.hostname or "").lower().rstrip(".")
@@ -199,7 +244,7 @@ def url_permitted(url: str) -> bool:
         return False
     deny = _split_hosts(settings.search_deny_hosts)
     allow = _split_hosts(settings.search_allow_hosts)
-    if host in {"localhost"} or _private_or_loopback(host) or _host_matches(host, deny):
+    if host in {"localhost"} or _non_global_ip_literal(host) or _host_matches(host, deny):
         return False
     if allow and not _host_matches(host, allow):
         return False

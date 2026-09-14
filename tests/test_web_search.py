@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from unittest.mock import AsyncMock
 
 import httpx
@@ -417,6 +418,111 @@ async def test_http_search_adapter_parses_provider_free_transport() -> None:
         httpx.AsyncClient = original  # type: ignore[assignment]
     assert hits[0]["url"] == "https://example.org/paris"
     assert "Paris is the capital of France." in hits[0]["excerpt"]
+
+
+IMDS_URL = "http://169.254.169.254/latest/meta-data/"
+LOOPBACK_URL = "http://127.0.0.1/"
+RFC1918_URL = "http://10.1.2.3/admin"
+UNSAFE_PROVIDER_HITS = [
+    {"url": IMDS_URL, "title": "imds", "excerpt": "instance-id ami-secret"},
+    {"url": LOOPBACK_URL, "title": "loopback", "excerpt": "nginx default page"},
+    {"url": RFC1918_URL, "title": "rfc1918", "excerpt": "internal dashboard"},
+    PARIS_HIT,
+]
+
+
+def test_url_permitted_rejects_non_global_ip_literals() -> None:
+    assert url_permitted(IMDS_URL) is False
+    assert url_permitted(LOOPBACK_URL) is False
+    assert url_permitted(RFC1918_URL) is False
+    assert url_permitted("http://192.168.0.9/x") is False
+    assert url_permitted("http://172.16.5.4/x") is False
+    assert url_permitted("http://[::1]/") is False
+    assert url_permitted("http://[::ffff:127.0.0.1]/") is False
+    assert url_permitted("http://[::ffff:169.254.169.254]/latest/meta-data/") is False
+    assert url_permitted("http://[fc00::1]/") is False
+    assert url_permitted("http://[fe80::1]/") is False
+    assert url_permitted("http://2130706433/") is False
+    assert url_permitted("file:///etc/passwd") is False
+    assert url_permitted("gopher://example.test/1") is False
+    assert url_permitted("https://example.test/ok") is True
+
+
+@pytest.mark.asyncio
+async def test_internal_result_urls_are_never_fetched_and_not_cited(tmp_path, monkeypatch) -> None:
+    requested: list[str] = []
+    original_send = httpx.AsyncClient.send
+    original_connect = socket.create_connection
+    blocked_hosts = {"169.254.169.254", "127.0.0.1", "10.1.2.3"}
+
+    async def tracking_send(self, request: httpx.Request, *args, **kwargs):
+        requested.append(str(request.url))
+        return await original_send(self, request, *args, **kwargs)
+
+    def guarded_connect(address, *args, **kwargs):
+        host = address[0]
+        if host in blocked_hosts:
+            raise AssertionError(f"Jarvis must not connect to result URL host {host}")
+        return original_connect(address, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", tracking_send)
+    monkeypatch.setattr(socket, "create_connection", guarded_connect)
+
+    engine = _engine(tmp_path, "never-fetch")
+    response, _ = await _chat(
+        engine,
+        monkeypatch,
+        "Search for the capital of France",
+        reply="Paris is the capital of France.",
+        hits=UNSAFE_PROVIDER_HITS,
+    )
+    assert requested == []
+    sources = response.tool_calls[0]["sources"]
+    cited = {item["url"] for item in sources}
+    assert PARIS_HIT["url"] in cited
+    assert IMDS_URL not in cited
+    assert LOOPBACK_URL not in cited
+    assert RFC1918_URL not in cited
+    blob = json.dumps(response.model_dump(mode="json"))
+    assert IMDS_URL not in blob
+    assert LOOPBACK_URL not in blob
+    assert RFC1918_URL not in blob
+    evidence_blob = json.dumps(response.deliberation["evidence"])
+    assert "169.254.169.254" not in evidence_blob
+    assert "10.1.2.3" not in evidence_blob
+
+
+@pytest.mark.asyncio
+async def test_http_backend_only_calls_provider_never_hit_urls() -> None:
+    requested: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        assert request.url.host == "api.tavily.com"
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"url": IMDS_URL, "title": "imds", "content": "ami-id"},
+                    {"url": LOOPBACK_URL, "title": "loopback", "content": "nginx"},
+                    {"url": RFC1918_URL, "title": "rfc1918", "content": "internal"},
+                    {"url": "https://example.org/paris", "title": "Paris", "content": "Paris is the capital of France."},
+                ]
+            },
+        )
+
+    original = httpx.AsyncClient
+    httpx.AsyncClient = lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs)  # type: ignore[assignment]
+    try:
+        backend = HttpSearchBackend("tavily", "https://api.tavily.com", "test-key", 5)
+        hits = await backend.search("capital of France", max_results=5)
+        receipts = receipts_from_hits(hits, retrieved_at="2026-01-01T00:00:00+00:00")
+    finally:
+        httpx.AsyncClient = original  # type: ignore[assignment]
+
+    assert requested == ["https://api.tavily.com/search"]
+    assert [item["url"] for item in hits] == ["https://example.org/paris"]
+    assert [item.url for item in receipts] == ["https://example.org/paris"]
 
 
 @pytest.mark.asyncio
