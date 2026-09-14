@@ -48,6 +48,7 @@ test("DOS-lite claim tags render as text and do not oversell a kernel", () => {
     unsupported_claim_warnings: ["unsupported claim (hypothesized): emotion label"]
   });
   const text = allText(view);
+  assert.equal(view.className, "deliberation-trace");
   assert.match(text, /observe → infer → challenge → commit/);
   assert.match(text, /not a full DOS Kernel/);
   assert.match(text, /HYPOTHESIZED/);

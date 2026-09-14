@@ -57,7 +57,7 @@ export function deliberationSummary(deliberation) {
   return stages.map(stage => stage.name).join(" → ");
 }
 export function deliberationView(deliberation) {
-  const detail = element("details", undefined, "context-receipt deliberation");
+  const detail = element("details", undefined, "deliberation-trace");
   detail.append(element("summary", "DOS-lite v0 · " + deliberationSummary(deliberation)));
   detail.append(element("p", deliberation?.label
     || "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel, trained judge, or private chain-of-thought engine", "hint"));
