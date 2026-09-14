@@ -144,9 +144,27 @@ class JarvisSettings(BaseSettings):
     def callback_url(self) -> str:
         return self.public_origin.rstrip("/") + "/auth/callback"
 
+    def allowed_cors_origins(self) -> list[str]:
+        """Production never serves a wildcard CORS allowlist."""
+
+        origins = [item.strip().rstrip("/") for item in self.cors_origins.split(",") if item.strip()]
+        production = self.environment.lower() in {"production", "prod"}
+        if not production:
+            return origins or ["*"]
+        if origins == ["*"] or not origins:
+            origin = self.public_origin.strip().rstrip("/")
+            if not origin:
+                raise RuntimeError("JARVIS_CORS_ORIGINS must be an explicit allowlist in production")
+            return [origin]
+        if "*" in origins:
+            raise RuntimeError("JARVIS_CORS_ORIGINS must not include * in production")
+        return origins
+
     def validate_deployment(self) -> None:
         if self.environment.lower() in {"production", "prod"} and not self.service_token:
             raise RuntimeError("JARVIS_SERVICE_TOKEN is required in production")
+        if self.environment.lower() in {"production", "prod"}:
+            self.allowed_cors_origins()
         if self.auth_mode == "oauth":
             if not self.oauth_configured():
                 raise RuntimeError(
