@@ -52,3 +52,22 @@ test("inspection shows deliberation stages and hypothesized claims as unverified
   assert.match(text, /hypothesized claim/);
   assert.match(text, /Paris is the capital of Mars/);
 });
+test("inspection shows CER replay fields from the existing audit without a research UI", () => {
+  const view = receiptView({status: "not_recorded"}, "turn-2", {
+    cer: {
+      version: "jarvis-cer-v1",
+      schema: "constitutional_execution_record",
+      model_identity: {provider: "test", model: "model"},
+      verification: {challenge: "completed"},
+      replay: {input_sha256: "aa", content_sha256: "bb"},
+      lineage: {previous_turn_id: "turn-1"}
+    }
+  });
+  const text = allText(view);
+  assert.match(text, /existing audit/);
+  assert.match(text, /Not a separate ledger/);
+  assert.match(text, /test \/ model/);
+  assert.match(text, /turn-1/);
+  assert.ok(text.includes("aa"));
+  assert.ok(text.includes("bb"));
+});

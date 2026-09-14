@@ -60,6 +60,7 @@ def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None =
                 or {"status": "not_recorded", "stages": [], "committed": False},
                 "claims": payload.get("claims") or [],
                 "unsupported_claim_warning": payload.get("unsupported_claim_warning"),
+                "cer": payload.get("cer") or {"status": "not_recorded"},
             }
         )
 

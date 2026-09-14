@@ -64,6 +64,22 @@ export function receiptView(receipt, turnId = "", trace = null) {
       ]));
     }
   }
+  const cer = trace?.cer;
+  if (cer && cer.status !== "not_recorded") {
+    detail.append(element("p", "CER · replayable turn record on the existing audit. Not a separate ledger.", "hint"));
+    const identity = cer.model_identity || {};
+    const replay = cer.replay || {};
+    const lineage = cer.lineage || {};
+    const verification = cer.verification || {};
+    detail.append(fields([
+      ["CER version", cer.version],
+      ["Provider / model", (identity.provider || "Not recorded") + " / " + (identity.model || "Not recorded")],
+      ["Challenge", verification.challenge],
+      ["Previous turn", lineage.previous_turn_id ?? "None"],
+      ["Input SHA-256", replay.input_sha256],
+      ["Content SHA-256", replay.content_sha256],
+    ]));
+  }
   return detail;
 }
 export function renderInspection(root, data) {

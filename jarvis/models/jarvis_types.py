@@ -76,6 +76,7 @@ class ChatResponse(BaseModel):
     )
     claims: list[dict[str, Any]] = Field(default_factory=list)
     unsupported_claim_warning: str | None = None
+    cer: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded"})
 
 
 class SpiralTurn(BaseModel):
