@@ -332,8 +332,9 @@ class JarvisEngine:
                     raise ProviderError(str(exc)) from None
             reply = llm_result.reply if llm_result else local_reply
             if llm_result and llm_result.safe_mode:
-                reasons.append("inference " + llm_result.inference_status + "; text-only safe mode")
-                decision = "fail_closed"
+                # Provider unavailability is not a governance fail-closed.
+                if decision != "fail_closed":
+                    decision = "degraded"
             if decision == "fail_closed" and not llm_result:
                 reply = (
                     "I’m pausing consequential action because the available signals are uncertain. "
@@ -346,6 +347,8 @@ class JarvisEngine:
                     "or the signals are too uncertain for a DOS-lite v0 commit."
                 )
                 reasoning_trace.append("dos-lite challenge abstain applied")
+            elif decision == "degraded" and llm_result and llm_result.safe_mode:
+                reasoning_trace.append("provider availability degraded; inference not confirmed")
 
             # --- 5. REFLECT ---
             prepared_citations = runtime_context.pop("prepared_citations")
@@ -509,7 +512,8 @@ class JarvisEngine:
                 model=turn.model,
                 cost_usd=turn.cost_usd,
                 latency_ms=turn.latency_ms,
-                read_only=decision in {"fail_closed", "abstain"},
+                read_only=decision in {"fail_closed", "abstain", "degraded"}
+                or bool(llm_result and llm_result.safe_mode),
                 cost_reported=llm_result.cost_reported if llm_result else True,
                 input_mode=request.input_mode,
                 provider_attempts=llm_result.attempts if llm_result else [],
