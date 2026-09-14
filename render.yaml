@@ -17,6 +17,7 @@ services:
       - key: JARVIS_LLM_MODEL
         value: nvidia/nemotron-3.5-lightning-30b-a3b
       - key: JARVIS_LLM_FALLBACK_MODELS
+        # NVIDIA Nemotron + Muse Glimmer catalog IDs are appended in code when NVIDIA_API_KEY is set.
         value: openai/gpt-oss-20b,z-ai/glm-5.3-flash
       - key: JARVIS_LLM_ATTEMPT_TIMEOUT_SECONDS
         value: "15"

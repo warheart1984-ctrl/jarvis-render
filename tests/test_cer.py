@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jarvis.brain.cer import CER_VERSION, build_cer_record
-from jarvis.brain.deliberation import deliberate
 from jarvis.brain.engine import JarvisEngine
 from jarvis.brain.inspection import inspect_session
 from jarvis.brain.llm import LLMResult
@@ -20,8 +19,22 @@ from jarvis.models.jarvis_types import ChatRequest, EmotionState, SpiralTurn
 from jarvis.persistence import JarvisStore
 
 
+def _deliberation() -> dict:
+    return {
+        "stages": [
+            {"name": "observe", "summary": "context gathered"},
+            {"name": "infer", "summary": "claims tagged"},
+            {"name": "challenge", "summary": "challenge completed"},
+            {"name": "commit", "summary": "committed"},
+        ],
+        "committed": True,
+        "claims": [{"tag": "specified", "text": "Weather?", "source": "user"}],
+        "unsupported_claim_warnings": [],
+    }
+
+
 def _cer_input(**overrides):
-    deliberation = deliberate("The sky might be cloudy today.", user_message="Weather?", fail_closed=False)
+    deliberation = _deliberation()
     payload = {
         "session_id": "sess-1",
         "turn_id": "turn-2",
@@ -120,7 +133,7 @@ def cer_engine(monkeypatch, tmp_path):
     generate = AsyncMock(return_value=LLMResult("The sky might be cloudy today.", "test", "model", 1))
     monkeypatch.setattr("jarvis.brain.engine.generate_llm_reply", generate)
     engine = JarvisEngine(store=JarvisStore(tmp_path / "cer.sqlite3"))
-    monkeypatch.setattr(engine, "_sync_with_spiral", AsyncMock(return_value=("skipped", None)))
+    monkeypatch.setattr(engine, "_sync_with_spiral", AsyncMock(return_value="skipped"))
     return engine
 
 

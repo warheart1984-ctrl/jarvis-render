@@ -18,7 +18,7 @@ export function receiptSummary(receipt) {
   return ({not_recorded: "Not recorded for this turn", no_inference: "No accepted inference",
     not_requested: "No model request", unavailable: "Verification unavailable"})[status] || "Not recorded for this turn";
 }
-export function receiptView(receipt, turnId = "", trace = null) {
+export function receiptView(receipt, turnId = "") {
   const detail = element("details", undefined, "context-receipt");
   detail.dataset.turnId = turnId;
   detail.append(element("summary", "Influenced this turn · " + receiptSummary(receipt)));
@@ -49,37 +49,78 @@ export function receiptView(receipt, turnId = "", trace = null) {
     item.append(entry); list.append(item);
   }
   detail.append(list);
-  const stages = trace?.deliberation?.stages || [];
-  if (stages.length || trace?.unsupported_claim_warning || (trace?.claims || []).length) {
-    const names = stages.map(stage => `${stage.name}:${stage.status}`).join(" → ") || "not recorded";
-    detail.append(element("p", "Deliberation · " + names, "hint"));
-    detail.append(element("p", "Observe, Infer, Challenge, Simulate, and Commit are internal stages. Hypothesized claims are not established facts. Tool results are evidence, not authority, and never memory writes.", "hint"));
-    if (trace?.unsupported_claim_warning) detail.append(element("p", trace.unsupported_claim_warning, "hint"));
-    for (const claim of trace?.claims || []) {
-      detail.append(fields([
-        ["Claim tag", claim.tag],
-        ["Source", claim.source],
-        ["Authority", claim.authority ? "true" : "false"],
-        ["Text", claim.text],
-      ]));
-    }
-  }
-  const cer = trace?.cer;
-  if (cer && cer.status !== "not_recorded") {
-    detail.append(element("p", "CER · replayable turn record on the existing audit. Not a separate ledger.", "hint"));
-    const identity = cer.model_identity || {};
-    const replay = cer.replay || {};
-    const lineage = cer.lineage || {};
-    const verification = cer.verification || {};
+  return detail;
+}
+export function deliberationSummary(deliberation) {
+  const stages = deliberation?.stages || [];
+  if (!stages.length) return "not run";
+  return stages.map(stage => stage.name).join(" → ");
+}
+export function coverageLabel(coverage) {
+  if (!coverage || coverage.sentence_count == null) return "not recorded";
+  const tagged = coverage.tagged_count ?? 0;
+  const total = coverage.sentence_count;
+  const matcher = coverage.matcher || "v0-token-overlap";
+  if (coverage.complete) return `${tagged}/${total} sentences tagged · ${matcher}`;
+  return `${tagged}/${total} sentences tagged · incomplete · ${matcher}`;
+}
+export function deliberationView(deliberation) {
+  const detail = element("details", undefined, "deliberation-trace");
+  detail.append(element("summary", "DOS-lite v0 · " + deliberationSummary(deliberation)));
+  detail.append(element("p", deliberation?.label
+    || "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel, trained judge, or private chain-of-thought engine", "hint"));
+  if (deliberation?.challenge_action) {
     detail.append(fields([
-      ["CER version", cer.version],
-      ["Provider / model", (identity.provider || "Not recorded") + " / " + (identity.model || "Not recorded")],
-      ["Challenge", verification.challenge],
-      ["Previous turn", lineage.previous_turn_id ?? "None"],
-      ["Input SHA-256", replay.input_sha256],
-      ["Content SHA-256", replay.content_sha256],
+            ["Challenge", deliberation.challenge_action],
+      ["Response commit", deliberation.response_commit || (deliberation.committed ? "committed" : "refused")],
+      ["Memory admission", deliberation.memory_admission || "not recorded"],
+      ["Committed", deliberation.committed ? "yes" : "no"],
+      ["Status", deliberation.status || "not_run"],
+      ["Reply coverage", coverageLabel(deliberation.reply_coverage)],
     ]));
   }
+  const claims = deliberation?.claims || [];
+  if (claims.length) {
+    const list = element("ol", undefined, "citation-list claim-list");
+    for (const claim of claims) {
+      const item = element("li");
+      item.append(element("p", `${(claim.tag || "hypothesized").toUpperCase()} · ${(claim.claim_class || "interpretive")} · ${claim.text || ""}`));
+      if (claim.support || claim.action) {
+        item.append(element("p", `support=${claim.support || "missing"} · severity=${claim.severity || "harmless"} · action=${claim.action || "continue"}`, "hint"));
+      }
+      if (claim.unsupported) item.append(element("p", "Unsupported: no evidence reference for this claim.", "hint"));
+      list.append(item);
+    }
+    detail.append(list);
+  }
+  for (const warning of deliberation?.unsupported_claim_warnings || []) {
+    detail.append(element("p", warning, "hint"));
+  }
+  for (const sentence of deliberation?.reply_coverage?.uncovered || []) {
+    detail.append(element("p", "Uncovered reply sentence: " + sentence, "hint"));
+  }
+  return detail;
+}
+export function cerView(cer) {
+  const detail = element("details", undefined, "cer-record");
+  detail.append(element("summary", "CER · replayable turn record"));
+  detail.append(element("p", "CER is stored on the existing audit. Not a separate ledger.", "hint"));
+  if (!cer || cer.status === "not_recorded") {
+    detail.append(element("p", "Not recorded for this turn.", "hint"));
+    return detail;
+  }
+  const identity = cer.model_identity || {};
+  const replay = cer.replay || {};
+  const lineage = cer.lineage || {};
+  const verification = cer.verification || {};
+  detail.append(fields([
+    ["CER version", cer.version],
+    ["Provider / model", (identity.provider || "Not recorded") + " / " + (identity.model || "Not recorded")],
+    ["Challenge", verification.challenge],
+    ["Previous turn", lineage.previous_turn_id ?? "None"],
+    ["Input SHA-256", replay.input_sha256],
+    ["Content SHA-256", replay.content_sha256],
+  ]));
   return detail;
 }
 export function renderInspection(root, data) {
@@ -116,6 +157,10 @@ export function renderInspection(root, data) {
   }
   const turns = element("section");
   turns.append(element("h3", "Turn citations"), element("p", "Latest 20 turns. Receipts describe context supplied at that time, not current source availability. Older turns without receipts are marked not recorded.", "hint"));
-  for (const turn of [...data.turns].reverse()) turns.append(receiptView(turn.context_receipt, turn.turn_id, turn));
+  for (const turn of [...data.turns].reverse()) {
+    turns.append(receiptView(turn.context_receipt, turn.turn_id));
+    if (turn.deliberation) turns.append(deliberationView(turn.deliberation));
+    if (turn.cer) turns.append(cerView(turn.cer));
+  }
   grid.append(memories, turns); root.append(grid);
 }

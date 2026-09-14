@@ -292,6 +292,27 @@ def test_oauth_visitors_are_isolated_and_operator_token_still_works(oauth_client
     )
     assert operator.status_code == 200, operator.text
     assert operator.json()["session_id"] != alice_session
+    headers = {"X-Jarvis-Service-Token": KEY}
+    assert client.get(f"/state/{alice_session}", headers=headers).status_code == 404
+    assert client.get(f"/sessions/{alice_session}/audit", headers=headers).status_code == 404
+    assert client.get(f"/sessions/{alice_session}/trace", headers=headers).status_code == 404
+    hijack = client.post(
+        "/chat",
+        headers=headers,
+        json={"user_id": "owner", "session_id": alice_session, "message": "operator hijack"},
+    )
+    assert hijack.status_code == 404
+    resume = client.post(
+        "/sessions/resume",
+        headers=headers,
+        json={"user_id": "owner", "session_id": alice_session},
+    )
+    assert resume.status_code == 404
+    inspect = client.get(
+        f"/sessions/{alice_session}/memory-inspection?user_id=owner",
+        headers=headers,
+    )
+    assert inspect.status_code == 404
 
 
 def test_login_disabled_in_operator_mode(monkeypatch, tmp_path):

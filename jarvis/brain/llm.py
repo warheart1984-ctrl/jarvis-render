@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import httpx
 
-from jarvis.core.config import ProviderSlot, settings
+from jarvis.core.config import MAX_INFERENCE_SLOTS, ProviderSlot, settings
 
 
 @dataclass(frozen=True)
@@ -36,13 +36,32 @@ class LLMResult:
 class ProviderError(RuntimeError):
     """Public-safe error; never propagate provider bodies or credentials."""
 
-    def __init__(self, message: str, retryable: bool = True, status: str = "unavailable"):
+    def __init__(
+        self,
+        message: str,
+        retryable: bool = True,
+        status: str = "unavailable",
+        block_credentials: bool = False,
+    ):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+        self.block_credentials = block_credentials
 
 
 _model_cooldowns: dict[tuple[str, str, str], float] = {}
+
+NVIDIA_INTEGRATE_BASE_URL = "https://integrate.api.nvidia.com/v1"
+# Chat-completions IDs currently listed on NVIDIA NIM (build.nvidia.com/models.md).
+# Retired/deprecated Nano, Mini, and Llama-3.1 Nemotron hosted IDs are omitted.
+# Lightning is usually primary and is deduped when appended.
+NVIDIA_FALLBACK_MODELS: tuple[str, ...] = (
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "meta/muse-glimmer-30b",
+)
 
 
 def _slot_key(slot: ProviderSlot) -> str:
@@ -63,25 +82,66 @@ def provider_config() -> tuple[str, str]:
     return provider, settings.llm_api_key or (settings.nvidia_api_key if provider == "nvidia" else "")
 
 
+def _append_slot(
+    slots: list[ProviderSlot],
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    api_key_env: str,
+) -> None:
+    if len(slots) >= MAX_INFERENCE_SLOTS or not model:
+        return
+    if any(slot.provider == provider and slot.model == model and slot.base_url == base_url for slot in slots):
+        return
+    slots.append(
+        ProviderSlot(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            timeout_seconds=settings.llm_attempt_timeout_seconds,
+        )
+    )
+
+
 def configured_slots() -> list[ProviderSlot]:
     if settings.llm_slots:
-        return settings.llm_slots
+        return list(settings.llm_slots)[:MAX_INFERENCE_SLOTS]
     provider, _ = provider_config()
     if provider in {"", "mock", "local"}:
         return []
-    fallbacks = settings.llm_fallback_models.split(",") if provider == "nvidia" else []
-    models = list(dict.fromkeys(m.strip() for m in [settings.llm_model, *fallbacks] if m.strip()))[:3]
-    key_env = "NVIDIA_API_KEY" if provider == "nvidia" and not settings.llm_api_key else "JARVIS_LLM_API_KEY"
-    return [
-        ProviderSlot(
+    slots: list[ProviderSlot] = []
+    if provider == "nvidia":
+        key_env = "NVIDIA_API_KEY" if not settings.llm_api_key else "JARVIS_LLM_API_KEY"
+        fallbacks = [item.strip() for item in settings.llm_fallback_models.split(",") if item.strip()]
+        for model in dict.fromkeys([settings.llm_model.strip(), *fallbacks]):
+            _append_slot(
+                slots,
+                provider="nvidia",
+                model=model,
+                base_url=settings.llm_base_url,
+                api_key_env=key_env,
+            )
+    else:
+        _append_slot(
+            slots,
             provider=provider,
-            model=m,
+            model=settings.llm_model.strip(),
             base_url=settings.llm_base_url,
-            api_key_env=key_env,
-            timeout_seconds=settings.llm_attempt_timeout_seconds,
+            api_key_env="JARVIS_LLM_API_KEY",
         )
-        for m in models
-    ]
+    if settings.nvidia_api_key:
+        nvidia_base = settings.llm_base_url if provider == "nvidia" else NVIDIA_INTEGRATE_BASE_URL
+        for model in NVIDIA_FALLBACK_MODELS:
+            _append_slot(
+                slots,
+                provider="nvidia",
+                model=model,
+                base_url=nvidia_base,
+                api_key_env="NVIDIA_API_KEY",
+            )
+    return slots
 
 
 def configured_models() -> list[str]:
@@ -206,8 +266,10 @@ async def generate_llm_reply(
             if outcome == "refused":
                 # Never use another provider to evade a content/safety refusal.
                 break
-            if not error.retryable:
+            if error.block_credentials:
                 blocked_keys.add(slot.api_key_env)
+                break
+            if not error.retryable:
                 break
         if outcome == "refused":
             break
@@ -247,6 +309,16 @@ async def generate_llm_reply(
     )
 
 
+def _http_provider_error(status_code: int) -> ProviderError:
+    auth_error = status_code in {401, 403}
+    client_error = 400 <= status_code < 500 and status_code != 429
+    return ProviderError(
+        f"Chat provider returned HTTP {status_code}.",
+        retryable=not (auth_error or client_error),
+        block_credentials=auth_error,
+    )
+
+
 async def _request_model(messages: list[dict[str, str]], slot: ProviderSlot, api_key: str) -> LLMResult:
     started = time.perf_counter()
     payload: dict[str, Any] = {
@@ -263,10 +335,7 @@ async def _request_model(messages: list[dict[str, str]], slot: ProviderSlot, api
         async with httpx.AsyncClient(timeout=slot.timeout_seconds, follow_redirects=False) as client:
             response = await client.post(slot.base_url + "/chat/completions", headers=headers, json=payload)
             if response.status_code != 200:
-                raise ProviderError(
-                    f"Chat provider returned HTTP {response.status_code}.",
-                    retryable=response.status_code not in {401, 403},
-                )
+                raise _http_provider_error(response.status_code)
             body = response.json()
     except httpx.TimeoutException:
         raise ProviderError("Chat provider timed out; no answer was confirmed.") from None

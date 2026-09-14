@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
+MAX_INFERENCE_SLOTS = 8
+
 
 class ProviderSlot(BaseModel):
     """Server-controlled endpoint with a secret reference, never an embedded key."""
@@ -71,7 +73,11 @@ class JarvisSettings(BaseSettings):
     llm_temperature: float = 0.7
     llm_timeout_seconds: float = Field(default=45.0, ge=1, le=50)
     llm_attempt_timeout_seconds: float = Field(default=15.0, ge=1, le=30)
-    llm_slots: list[ProviderSlot] = Field(default_factory=list, max_length=3)
+    # Legacy JARVIS_LLM_SLOTS override. Catalog Nemotron + Muse Glimmer fallbacks need more than 3.
+    llm_slots: list[ProviderSlot] = Field(default_factory=list, max_length=MAX_INFERENCE_SLOTS)
+    # Operator-ordered fallbacks after JARVIS_LLM_MODEL. NVIDIA Nemotron + Muse Glimmer
+    # catalog IDs are appended in code when NVIDIA_API_KEY is set; they are not a
+    # separate authority path.
     llm_fallback_models: str = "openai/gpt-oss-20b,z-ai/glm-5.3-flash"
     llm_max_tokens: int = Field(default=768, ge=64, le=4096)
     speech_asr_url: str = (
@@ -127,8 +133,43 @@ class JarvisSettings(BaseSettings):
     visitor_chat_daily_limit: int = Field(default=100, ge=1, le=10000)
     visitor_voice_daily_limit: int = Field(default=60, ge=1, le=10000)
 
+    # Observe-only web search. Empty provider/key degrades; it never fail-closes governance.
+    search_provider: str = ""
+    search_api_key: str = ""
+    search_base_url: str = ""
+    search_timeout_seconds: float = Field(default=8.0, ge=1, le=30)
+    search_attempts: int = Field(default=2, ge=1, le=2)
+    search_max_results: int = Field(default=5, ge=1, le=5)
+    search_max_excerpt_chars: int = Field(default=240, ge=40, le=240)
+    search_max_bytes: int = Field(default=2048, ge=256, le=16384)
+    search_max_response_bytes: int = Field(default=65536, ge=1024, le=262144)
+    search_allow_hosts: str = ""
+    search_deny_hosts: str = "localhost,127.0.0.1,::1,0.0.0.0"
+    search_rate_limit: int = Field(default=8, ge=1, le=60)
+    search_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
+
+    @field_validator("search_base_url")
+    @classmethod
+    def validate_search_endpoint(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            return ""
+        parsed = urlsplit(cleaned)
+        local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or (parsed.scheme != "https" and not (parsed.scheme == "http" and local))
+        ):
+            raise ValueError("Search base URL must be HTTPS, or HTTP on loopback; do not embed credentials.")
+        return cleaned.rstrip("/")
+
     def governed_writes_allowed(self) -> bool:
-        # Production promotion requires EMR gates, which are not implemented yet.
+        # Production cannot enable Continuity/ledger writes via the env flag.
+        # Hypothesized/tool/inferred memory admission is a separate durable lock.
         return self.governed_writes_enabled and self.environment.lower() not in {"production", "prod"}
 
     def oauth_enabled(self) -> bool:
@@ -160,9 +201,27 @@ class JarvisSettings(BaseSettings):
     def callback_url(self) -> str:
         return self.public_origin.rstrip("/") + "/auth/callback"
 
+    def allowed_cors_origins(self) -> list[str]:
+        """Production never serves a wildcard CORS allowlist."""
+
+        origins = [item.strip().rstrip("/") for item in self.cors_origins.split(",") if item.strip()]
+        production = self.environment.lower() in {"production", "prod"}
+        if not production:
+            return origins or ["*"]
+        if origins == ["*"] or not origins:
+            origin = self.public_origin.strip().rstrip("/")
+            if not origin:
+                raise RuntimeError("JARVIS_CORS_ORIGINS must be an explicit allowlist in production")
+            return [origin]
+        if "*" in origins:
+            raise RuntimeError("JARVIS_CORS_ORIGINS must not include * in production")
+        return origins
+
     def validate_deployment(self) -> None:
         if self.environment.lower() in {"production", "prod"} and not self.service_token:
             raise RuntimeError("JARVIS_SERVICE_TOKEN is required in production")
+        if self.environment.lower() in {"production", "prod"}:
+            self.allowed_cors_origins()
         if self.auth_mode == "oauth":
             if not self.oauth_configured():
                 raise RuntimeError(

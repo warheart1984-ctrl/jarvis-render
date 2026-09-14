@@ -15,29 +15,41 @@ CER_VERSION = "jarvis-cer-v1"
 
 def _challenge_status(deliberation: dict[str, Any]) -> str:
     for stage in deliberation.get("stages") or []:
-        if stage.get("name") == "challenge":
-            return str(stage.get("status") or "not_recorded")
+        name = str(stage.get("name") or "")
+        if name.endswith("challenge") or name == "challenge":
+            return str(stage.get("status") or "completed")
     return "not_recorded"
 
 
 def _observe_tools(observe: dict[str, Any]) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     for record in observe.get("records") or []:
-        citations = [
-            {
-                "locator": item.get("locator"),
-                "content_sha256": item.get("content_sha256"),
-            }
-            for item in (record.get("citations") or [])
-            if isinstance(item, dict)
-        ]
+        citations: list[dict[str, Any]] = []
+        for item in record.get("citations") or []:
+            if isinstance(item, dict):
+                citations.append(
+                    {
+                        "locator": item.get("locator") or item.get("url"),
+                        "content_sha256": item.get("content_sha256") or item.get("content_hash") or "",
+                    }
+                )
+            elif isinstance(item, str):
+                citations.append({"locator": item, "content_sha256": ""})
+        for item in record.get("sources") or []:
+            if isinstance(item, dict):
+                citations.append(
+                    {
+                        "locator": item.get("url") or item.get("locator"),
+                        "content_sha256": item.get("content_hash") or item.get("content_sha256") or "",
+                    }
+                )
         tools.append(
             {
-                "tool": record.get("tool"),
+                "tool": record.get("tool") or record.get("tool_name"),
                 "status": record.get("status"),
-                "observed": bool(record.get("observed")),
-                "args_hash": record.get("args_hash") or "",
-                "payload_hash": record.get("payload_hash") or "",
+                "observed": bool(record.get("observed") or record.get("sources") or record.get("citations")),
+                "args_hash": str(record.get("args_hash") or record.get("source_hash") or ""),
+                "payload_hash": str(record.get("payload_hash") or record.get("result_hash") or ""),
                 "citations": citations,
             }
         )
@@ -91,7 +103,8 @@ def build_cer_record(
         "verification": {
             "challenge": _challenge_status(deliberation),
             "committed": bool(deliberation.get("committed")),
-            "unsupported_claim_warning": deliberation.get("unsupported_claim_warning"),
+            "unsupported_claim_warning": deliberation.get("unsupported_claim_warning")
+            or ("; ".join(deliberation.get("unsupported_claim_warnings") or []) or None),
             "input_sha256": input_sha,
             "content_sha256": output_sha,
         },

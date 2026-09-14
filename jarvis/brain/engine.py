@@ -1,4 +1,4 @@
-"""Jarvis engine — orchestrates conversation, v0 heuristic state, memory, and replies."""
+"""Jarvis engine — orchestrates conversation, v0 heuristic state, DOS-lite deliberation, memory, and replies."""
 
 from __future__ import annotations
 
@@ -6,13 +6,21 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, assert_never
 from uuid import uuid4
 
 from jarvis.auth import AccessStore, Principal
 from jarvis.brain.cer import build_cer_record
 from jarvis.brain.context import build_chat_context
-from jarvis.brain.deliberation import admit_external, admit_tool, deliberate, withheld_commit_reply
+from jarvis.brain.deliberation import (
+    ChallengeAction,
+    DeliberationBlocked,
+    DeliberationRunner,
+    challenge_reply,
+    evidence_from_citation,
+    map_challenge_decision,
+    message_looks_hypothetical,
+)
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
 from jarvis.brain.memory import (
@@ -24,17 +32,20 @@ from jarvis.brain.memory import (
 from jarvis.brain.provenance import context_receipt, memory_reference
 from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
-from jarvis.brain.tools import ObserveResult, observe_turn
+from jarvis.brain.tools import (
+    evidence_from_search_hit,
+    may_admit_retrieved_to_memory,
+    maybe_web_search,
+    quoted_search_payload,
+    search_citation,
+)
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
-from jarvis.governance.adapters import policy_context_from_state
-from jarvis.governance.lanes import evaluate_policies
-from jarvis.governance.outcomes import outcomes_from_policy
-from jarvis.governance.schemas import ContinuityAuthStatus
 from jarvis.models.jarvis_types import (
     ChatRequest,
     ChatResponse,
     JarvisState,
+    SessionLockReason,
     SpiralTurn,
 )
 from jarvis.persistence import AuditLedger, JarvisStore
@@ -45,18 +56,23 @@ from jarvis.spiral_client.infinity import ProjectInfinityClient
 
 logger = logging.getLogger(__name__)
 
-
-def _spiral_sync_result(result: Any) -> tuple[str, Any | None]:
-    if isinstance(result, tuple) and len(result) == 2:
-        return str(result[0]), result[1]
-    return str(result), None
+_LOCK_MESSAGES = {
+    SessionLockReason.RECOVERY: (
+        "Session is read-only after verified recovery (reason=recovery). Start a new chat to continue."
+    ),
+    SessionLockReason.CONFLICT: ("Session is read-only pending conflict resolution (reason=conflict)."),
+    SessionLockReason.VERIFICATION: (
+        "Session is read-only because audit or turn verification failed (reason=verification). Start a new chat."
+    ),
+}
 
 
 class JarvisEngine:
     """The main Jarvis orchestrator.
 
-    Manages sessions, runs the v0 emotion classifier and spiral-state tracker,
-    and optionally syncs state with the Spiral Intelligence backend.
+    Manages sessions, runs the v0 emotion classifier, spiral-state tracker,
+    and DOS-lite deliberation pipeline, and optionally syncs state with the
+    Spiral Intelligence backend.
     """
 
     def __init__(self, spiral_client: SpiralClient | None = None, store: JarvisStore | None = None) -> None:
@@ -70,7 +86,7 @@ class JarvisEngine:
         self.reviver = ReviverLedger(self.store.path, *self.store.scope)
         self.recall = RecallLedger(self.store.path, *self.store.scope)
         self._tenant_engines: dict[tuple[str, str], JarvisEngine] = {}
-        self._read_only_sessions: set[str] = set()
+        self._read_only_reasons: dict[str, SessionLockReason] = {}
         self.continuity = (
             ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token)
             if settings.continuity_ledger_url
@@ -81,6 +97,7 @@ class JarvisEngine:
             if settings.infinity_enabled and settings.infinity_api_base
             else None
         )
+        self.search_backend = None
 
     def for_principal(self, principal: Principal) -> JarvisEngine:
         scope = principal.tenant_id, principal.subject
@@ -132,7 +149,7 @@ class JarvisEngine:
                         raise ValueError("Recovery checkpoint is invalid; start a new session.") from None
                     if state.user_id != user_id or state.session_id != new_id:
                         raise ValueError("Session does not belong to this user.")
-                    self._read_only_sessions.add(new_id)
+                    self.set_read_only(new_id, SessionLockReason.RECOVERY)
                 elif self.audit.list(new_id) or self.reviver.latest_verified(new_id):
                     raise ValueError("Session recovery could not be verified; start a new session.")
             self._sessions[new_id] = state
@@ -158,8 +175,9 @@ class JarvisEngine:
         Steps:
         1. LISTEN  — receive the message and resolve the session
         2. ORIENT  — v0 keyword emotion classifier + phase label
-        3. REASON  — advance the bounded five-variable spiral-state tracker
-        4. RESPOND — generate a contextual reply
+        3. REASON  — advance the bounded five-variable spiral-state tracker,
+                     then run the v0 DOS-lite deliberation stages through Challenge
+        4. RESPOND — generate a contextual reply; Evaluate + Commit tag claims
         5. REFLECT — extract memories and update preferences
         6. EVOLVE  — persist the turn; optional backend sync (disabled pending EMR)
         """
@@ -169,7 +187,8 @@ class JarvisEngine:
         recall_key = settings.service_token
         if principal is not None:
             if (
-                not settings.oauth_enabled() or not settings.recall_signing_key
+                not settings.oauth_enabled()
+                or not settings.recall_signing_key
                 or request.user_id != principal.user_id
                 or not self.access.owns(principal, request.session_id or "")
                 or self.store.scope != (principal.tenant_id, principal.subject)
@@ -183,8 +202,9 @@ class JarvisEngine:
         ):
             raise ValueError("Recall ownership check failed")
         state = await self.get_or_create_session(request.user_id, request.session_id)
-        if state.session_id in self._read_only_sessions:
-            raise ValueError("Session is read-only pending conflict resolution.")
+        if state.session_id in self._read_only_reasons:
+            reason = self._read_only_reasons[state.session_id]
+            raise ValueError(_LOCK_MESSAGES[reason])
         session_lock = await self._get_session_lock(state.session_id)
 
         async with session_lock:
@@ -224,21 +244,73 @@ class JarvisEngine:
                 reasons.append("stress above safe execution threshold")
             decision = "fail_closed" if reasons else "answer"
 
-            # --- 4. RESPOND ---
-            local_reply, reasoning_trace = generate_response(state, request.message)
+            owned_memories = [
+                m for m in state.long_term_memory if m.user_id == state.user_id and m.session_id == state.session_id
+            ]
+            runner = DeliberationRunner()
             turn_id = uuid4().hex
             correlation_id = uuid4().hex
-            observe = ObserveResult(required=False, grounding_required=False, records=[], thin=False)
-            if settings.observe_tools_enabled and decision != "fail_closed":
-                observe = await observe_turn(
-                    request.message,
-                    session_id=state.session_id,
-                    intent=state.intent.value,
-                    ledger=self.continuity,
+            # Observe-only search: explicit request only. Failure degrades; it is not fail-closed.
+            search_record = await maybe_web_search(
+                message=request.message,
+                search_query=request.search_query,
+                session_id=state.session_id,
+                tenant_id=self.store.tenant_id,
+                owner_sub=self.store.owner_sub,
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
+                quota=self.access.consume_quota,
+                backend=self.search_backend,
+            )
+            if search_record is not None:
+                self.audit.append(
+                    uuid4().hex,
+                    state.session_id,
+                    "tool_call",
+                    search_record.to_public_dict(),
+                    turn_id=turn_id,
                 )
-                if observe.thin:
-                    reasons.append("observe evidence thin; refusing an ungrounded commit")
-                    decision = "fail_closed"
+                for hit in search_record.sources:
+                    runner.add_evidence(evidence_from_search_hit(hit))
+            runner.observe(
+                message=request.message,
+                session_id=state.session_id,
+                memories=[(m.memory_id, m.content) for m in owned_memories[:8]],
+                history=[
+                    (
+                        str(item.get("turn_id") or index),
+                        f"{item.get('role', 'message')}: {item.get('content', '')}",
+                    )
+                    for index, item in enumerate(state.conversation_history[-8:])
+                    if item.get("role") in {"user", "assistant"}
+                ],
+                external_context=request.context or None,
+                emotion_rationale=emotion.rationale,
+            )
+            runner.interpret(
+                emotion_label=emotion.inferred_emotion,
+                intent=state.intent.value,
+                phase=state.phase.value,
+                confidence=confidence,
+            )
+            runner.infer()
+            if message_looks_hypothetical(request.message):
+                runner.simulate()
+            runner.challenge(uncertainty=uncertainty, stress=emotion.stress)
+            if runner.challenge_action is not None:
+                decision = map_challenge_decision(runner.challenge_action, decision)
+            for reason in runner.challenge_reasons:
+                if reason not in reasons:
+                    reasons.append(reason)
+            if decision == "fail_closed" and not reasons:
+                reasons.append("deliberation challenge fail-closed")
+
+            # --- 4. RESPOND ---
+            local_reply, reasoning_trace = generate_response(state, request.message)
+            forced_reply = challenge_reply(runner.challenge_action or ChallengeAction.CONTINUE)
+            if forced_reply and decision != "fail_closed":
+                local_reply = forced_reply
+                reasoning_trace.append(f"dos-lite challenge forced {runner.challenge_action.value}")
 
             def audit_attempt(entry: dict[str, Any]) -> None:
                 self.audit.append(uuid4().hex, state.session_id, "inference_attempt", entry, turn_id=turn_id)
@@ -247,12 +319,18 @@ class JarvisEngine:
             previous = RecallResult()
             if request.recall_previous:
                 previous = (
-                    self.recall.previous(
-                        recall_owner, recall_key, session_id=state.session_id, before=state.created_at
-                    )
+                    self.recall.previous(recall_owner, recall_key, session_id=state.session_id, before=state.created_at)
                     if recall_owner
                     else RecallResult({"status": "not_authorized"})
                 )
+            search_quotes = (
+                quoted_search_payload(search_record.sources) if search_record and search_record.sources else None
+            )
+            search_citations = (
+                [search_citation(item, session_id=state.session_id) for item in search_record.sources]
+                if search_record
+                else None
+            )
             messages, runtime_context = build_chat_context(
                 state,
                 request,
@@ -261,9 +339,10 @@ class JarvisEngine:
                 continuity_configured=self.continuity is not None,
                 speech_configured=bool(settings.nvidia_api_key),
                 previous=previous,
-                observe_citations=observe.observed_citations(),
+                search_quotes=search_quotes or None,
+                search_citations=search_citations or None,
+                search_status=search_record.status.value if search_record else "not_requested",
             )
-            runtime_context["observe"] = observe.public_dict()
             if request.recall_previous:
                 self.audit.append(
                     uuid4().hex,
@@ -276,9 +355,10 @@ class JarvisEngine:
                     },
                     turn_id=turn_id,
                 )
-            # Observe-only tools already ran. Language-only clarification is allowed
-            # even when consequential actions are blocked. No memory writes or execution.
-            if emotion.stress <= 0.8 and not observe.thin:
+            # Language-only clarification is allowed even when consequential actions
+            # are blocked. No tools, external memory writes or execution are offered.
+            skip_hosted = runner.challenge_action in {ChallengeAction.CLARIFY, ChallengeAction.ABSTAIN}
+            if emotion.stress <= 0.8 and decision != "abstain" and not skip_hosted:
                 try:
                     llm_result = await generate_llm_reply(
                         messages,
@@ -291,65 +371,81 @@ class JarvisEngine:
                     raise ProviderError(str(exc)) from None
             reply = llm_result.reply if llm_result else local_reply
             if llm_result and llm_result.safe_mode:
-                reasons.append("inference " + llm_result.inference_status + "; text-only safe mode")
-                decision = "fail_closed"
+                # Provider unavailability is not a governance fail-closed.
+                if decision != "fail_closed":
+                    decision = "degraded"
             if decision == "fail_closed" and not llm_result:
                 reply = (
-                    withheld_commit_reply()
-                    if observe.thin
-                    else (
-                        "I’m pausing consequential action because the available signals are uncertain. "
-                        "I can clarify the goal or continue with read-only planning."
-                    )
+                    "I’m pausing consequential action because the available signals are uncertain. "
+                    "I can clarify the goal or continue with read-only planning."
                 )
-                reasoning_trace.append(
-                    "commit withheld: observe evidence thin" if observe.thin else "fail-closed safety lane applied"
+                reasoning_trace.append("fail-closed safety lane applied")
+            elif decision == "abstain" and not llm_result:
+                reply = forced_reply or (
+                    "I'm abstaining from a committed answer. The available evidence is too thin "
+                    "or the signals are too uncertain for a DOS-lite v0 commit."
                 )
+                reasoning_trace.append("dos-lite challenge abstain applied")
+            elif decision == "degraded" and llm_result and llm_result.safe_mode:
+                reasoning_trace.append("provider availability degraded; inference not confirmed")
 
             # --- 5. REFLECT ---
-            receipt = context_receipt(runtime_context.pop("prepared_citations"), llm_result)
+            prepared_citations = runtime_context.pop("prepared_citations")
+            for item in prepared_citations:
+                cited = evidence_from_citation(item)
+                if cited:
+                    runner.add_evidence(cited)
+            receipt = context_receipt(prepared_citations, llm_result)
             runtime_context["context_receipt"] = receipt
-            external = [admit_tool(record) for record in observe.records]
-            deliberation = deliberate(
-                reply,
-                user_message=request.message,
-                fail_closed=decision == "fail_closed",
-                citations=receipt.get("citations") or [],
-                external=external,
-                tool_records=observe.records,
-            )
-            if not deliberation["committed"]:
-                reply = withheld_commit_reply()
+            try:
+                runner.evaluate(reply)
+                if runner.gated_reply:
+                    reply = runner.gated_reply
+                if runner.challenge_action is not None:
+                    decision = map_challenge_decision(runner.challenge_action, decision)
+                if runner.response_commit == "abstained" or runner.challenge_action is ChallengeAction.ABSTAIN:
+                    decision = "abstain"
+                elif runner.response_commit == "refused" and decision == "answer":
+                    decision = "fail_closed"
+                    reasons.append("safety-critical claim lacked verification")
+                deliberation = runner.commit()
+            except DeliberationBlocked as exc:
+                reasons.append(str(exc))
                 decision = "fail_closed"
-                reasons.append("commit withheld: no challenged evidence")
-                deliberation = deliberate(
-                    reply,
-                    user_message=request.message,
-                    fail_closed=True,
-                    citations=receipt.get("citations") or [],
-                    external=external,
-                    tool_records=observe.records,
-                )
-            reasoning_trace.extend(
-                f"deliberation {stage['name']}: {stage['status']}" for stage in deliberation["stages"]
-            )
-            if deliberation.get("unsupported_claim_warning"):
-                reasoning_trace.append(
-                    "unsupported-claim warning: " + str(deliberation["unsupported_claim_warning"])
-                )
+                deliberation = runner.snapshot(status="blocked", blocked_reason=str(exc))
+            public_deliberation = deliberation.to_public_dict()
+            for stage in deliberation.stages:
+                reasoning_trace.append(f"dos-lite {stage.name.value}: {stage.summary}")
             state.conversation_history = add_to_conversation_history(state, request.message, reply)
             for message in state.conversation_history[-2:]:
                 message["turn_id"] = turn_id
 
+            snippets = [hit.excerpt for hit in search_record.sources] if search_record else []
+            admit_user_grounded = (
+                request.memory_consent
+                and decision == "answer"
+                and runner.memory_admission == "eligible"
+                and not snippets
+            )
             memory_entry = (
-                extract_memory(state, request.message, reply)
-                if request.memory_consent and decision == "answer"
+                extract_memory(
+                    state,
+                    request.message,
+                    reply,
+                    snippets=snippets,
+                    memory_admission=runner.memory_admission,
+                )
+                if admit_user_grounded
                 else None
             )
+            if memory_entry and snippets and not may_admit_retrieved_to_memory(
+                user_requested=request.memory_consent
+            ):
+                memory_entry = None
             if memory_entry:
                 state.long_term_memory = add_long_term_memory(state, memory_entry)
 
-            if request.memory_consent and decision == "answer":
+            if admit_user_grounded:
                 state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
             turn = SpiralTurn(
@@ -366,25 +462,25 @@ class JarvisEngine:
                     {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
                     {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
                     {"type": "runtime_context", **runtime_context},
-                    {"type": "observe", **observe.public_dict()},
-                    {"type": "deliberation", **deliberation},
+                    {"type": "deliberation", "version": "v0-dos-lite", "trace": public_deliberation},
+                    {
+                        "type": "tool_calls",
+                        "calls": [search_record.to_public_dict()] if search_record else [],
+                    },
                 ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
             )
             # --- 6. EVOLVE (sync with Spiral backend if available) ---
             backend_status = "skipped_read_only"
-            evolve_payload = None
             if decision == "answer" and request.memory_consent:
                 backend_status = "skipped_writes_disabled"
-                if settings.governed_writes_allowed():
-                    backend_status, evolve_payload = _spiral_sync_result(
-                        await self._sync_with_spiral(state, request.message, reply)
-                    )
-            if evolve_payload is not None:
-                admitted = admit_external("project_infinity", evolve_payload)
-                deliberation["claims"] = list(deliberation.get("claims") or []) + [admitted]
-                turn.evidence.append({"type": "external_suggestion", **admitted})
+                if (
+                    settings.governed_writes_allowed()
+                    and runner.memory_admission == "eligible"
+                    and not snippets
+                ):
+                    backend_status = await self._sync_with_spiral(state, request.message, reply)
             turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
             turn.model = llm_result.model if llm_result else "bounded-local"
@@ -407,9 +503,13 @@ class JarvisEngine:
                 inference_status=llm_result.inference_status if llm_result else "not_requested",
                 fallback_used=llm_result.fallback_used if llm_result else False,
                 safe_mode=llm_result.safe_mode if llm_result else False,
-                deliberation=deliberation,
-                claims=deliberation.get("claims") or [],
-                observe=observe.public_dict(),
+                deliberation=public_deliberation,
+                claims=public_deliberation.get("claims") or [],
+                observe={
+                    "required": search_record is not None,
+                    "thin": False,
+                    "records": [search_record.to_public_dict()] if search_record else [],
+                },
                 context_receipt=receipt,
                 previous_turn_id=prior_turn_ids[-1] if prior_turn_ids else None,
             )
@@ -439,9 +539,8 @@ class JarvisEngine:
                         "correlation_id": correlation_id,
                         "runtime_context": runtime_context,
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
-                        "deliberation": deliberation,
-                        "claims": deliberation.get("claims") or [],
-                        "unsupported_claim_warning": deliberation.get("unsupported_claim_warning"),
+                        "deliberation": public_deliberation,
+                        "tool_calls": [search_record.to_public_dict()] if search_record else [],
                         "cer": cer,
                     },
                 },
@@ -461,16 +560,6 @@ class JarvisEngine:
             )
 
             audit_event = self.audit.list(state.session_id)[-1]
-            self._record_governance_outcomes(
-                state,
-                turn_id=turn_id,
-                decision=decision,
-                uncertainty=uncertainty,
-                stress=emotion.stress,
-                event_hash=audit_event["event_hash"],
-                provider_identity_available=bool(llm_result)
-                or settings.llm_provider.lower() in {"", "mock", "local"},
-            )
             self.reviver.save(
                 checkpoint_id=f"checkpoint-{turn_id}",
                 session_id=state.session_id,
@@ -490,7 +579,7 @@ class JarvisEngine:
                 except Exception:
                     # The turn is stored, but no signed recall checkpoint was confirmed.
                     # Lock rather than continue with live state behind durable state.
-                    self.set_read_only(state.session_id)
+                    self.set_read_only(state.session_id, SessionLockReason.VERIFICATION)
                     raise RuntimeError("Recall checkpoint could not be confirmed; session locked") from None
 
             self._save_session(state)
@@ -518,7 +607,8 @@ class JarvisEngine:
                 model=turn.model,
                 cost_usd=turn.cost_usd,
                 latency_ms=turn.latency_ms,
-                read_only=decision == "fail_closed",
+                read_only=decision in {"fail_closed", "abstain", "degraded"}
+                or bool(llm_result and llm_result.safe_mode),
                 cost_reported=llm_result.cost_reported if llm_result else True,
                 input_mode=request.input_mode,
                 provider_attempts=llm_result.attempts if llm_result else [],
@@ -529,9 +619,9 @@ class JarvisEngine:
                 correlation_id=correlation_id,
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
-                deliberation=deliberation,
-                claims=deliberation.get("claims") or [],
-                unsupported_claim_warning=deliberation.get("unsupported_claim_warning"),
+                lock_reason=self.lock_reason(state.session_id),
+                tool_calls=[search_record.to_public_dict()] if search_record else [],
+                deliberation=public_deliberation,
                 cer=cer,
             )
 
@@ -544,6 +634,7 @@ class JarvisEngine:
         if state is None:
             raise ValueError("Session not found.")
 
+        lock_reason = self.lock_reason(session_id)
         return {
             "session_id": state.session_id,
             "user_id": state.user_id,
@@ -552,8 +643,9 @@ class JarvisEngine:
             "energy": state.energy,
             "confidence": state.confidence,
             "turn_count": state.turn_count,
-            "read_only": self.is_read_only(session_id),
-            "recovered": session_id in self._read_only_sessions,
+            "read_only": lock_reason is not None,
+            "lock_reason": lock_reason.value if lock_reason else None,
+            "recovered": lock_reason is SessionLockReason.RECOVERY,
             "memory_count": len(state.long_term_memory),
             "spiral_core": state.spiral_core.model_dump(),
             "emotion": state.emotion.model_dump(),
@@ -584,51 +676,26 @@ class JarvisEngine:
     def verify_audit(self, session_id: str) -> dict[str, Any]:
         return {"session_id": session_id, "valid": self.audit.verify(session_id)}
 
-    def set_read_only(self, session_id: str) -> None:
-        self._read_only_sessions.add(session_id)
+    def set_read_only(self, session_id: str, reason: SessionLockReason | str = SessionLockReason.CONFLICT) -> None:
+        locked = reason if isinstance(reason, SessionLockReason) else SessionLockReason(reason)
+        match locked:
+            case SessionLockReason.RECOVERY | SessionLockReason.CONFLICT | SessionLockReason.VERIFICATION:
+                if session_id not in self._read_only_reasons:
+                    self._read_only_reasons[session_id] = locked
+            case _:
+                assert_never(locked)
+
+    def lock_reason(self, session_id: str) -> SessionLockReason | None:
+        return self._read_only_reasons.get(session_id)
 
     def is_read_only(self, session_id: str) -> bool:
-        return session_id in self._read_only_sessions
+        return session_id in self._read_only_reasons
 
-    def _record_governance_outcomes(
-        self,
-        state: JarvisState,
-        *,
-        turn_id: str,
-        decision: str,
-        uncertainty: float,
-        stress: float,
-        event_hash: str,
-        provider_identity_available: bool,
-    ) -> None:
-        """Persist observe-only lane results. Never changes this turn's decision."""
+    def authorize_session(self, session_id: str) -> None:
+        """Clear a conflict lock after a verified supersession. Recovery/verification stay locked."""
 
-        if not settings.governance_outcomes_enabled:
-            return
-        try:
-            context = policy_context_from_state(
-                state,
-                turn_id=turn_id,
-                uncertainty=uncertainty,
-                stress=stress,
-                audit_available=True,
-                continuity_auth=ContinuityAuthStatus.KNOWN,
-                hash_verified=True,
-                provider_identity_available=provider_identity_available,
-                checkpoint_integrity_ok=True,
-                side_effects_requested=False,
-            )
-            policy = evaluate_policies(context)
-            rows = outcomes_from_policy(
-                policy,
-                session_id=state.session_id,
-                turn_id=turn_id,
-                turn_decision=decision,
-                event_hash=event_hash,
-            )
-            self.store.save_governance_outcomes(rows)
-        except Exception:
-            logger.debug("Governance outcome recording skipped", exc_info=True)
+        if self._read_only_reasons.get(session_id) is SessionLockReason.CONFLICT:
+            self._read_only_reasons.pop(session_id, None)
 
     def clear_memory(self, session_id: str) -> dict[str, str]:
         state = self.get_session(session_id)
@@ -647,26 +714,22 @@ class JarvisEngine:
     # Spiral backend sync
     # ------------------------------------------------------------------
 
-    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> tuple[str, Any | None]:
-        """Optionally push state to the Spiral Intelligence backend.
-
-        Infinity/Evolve results are returned for evidence admission only. They do not revise this reply.
-        """
+    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
+        """Optionally push state to the Spiral Intelligence backend."""
 
         if not settings.governed_writes_allowed() or self.store.tenant_id != "t_jon":
-            return "skipped_writes_disabled", None
+            return "skipped_writes_disabled"
 
-        evolve_payload: Any | None = None
         try:
             if self.infinity:
-                evolve_payload = await self.infinity.evolve(
+                await self.infinity.evolve(
                     job_id=f"jarvis-{state.session_id}-{state.turn_count}",
                     jarvis_run_id=state.session_id,
                     task=user_message,
                     initial_candidate=reply,
                 )
             if not await self.spiral.is_available():
-                return "unavailable", evolve_payload
+                return "unavailable"
 
             await self.spiral.spiral_turn(
                 session_id=state.session_id,
@@ -692,7 +755,7 @@ class JarvisEngine:
                 score=state.confidence,
                 notes=f"Jarvis turn {state.turn_count}: {user_message[:100]}",
             )
-            return "connected", evolve_payload
+            return "connected"
         except Exception as exc:
             logger.debug("Spiral sync skipped: %s", exc)
-            return "error", evolve_payload
+            return "error"

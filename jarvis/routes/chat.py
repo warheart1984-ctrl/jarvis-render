@@ -106,7 +106,7 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
     if result.get("status") == "simulated":
         return {"status": "simulated", "memory_id": memory.memory_id, "durable": False, "ledger": result}
     if result.get("status") in {"conflict", "refused"} or result.get("refused") is True:
-        active.set_read_only(state.session_id)
+        active.set_read_only(state.session_id, "conflict")
         active.audit.append(
             f"conflict-{request.memory_id}",
             state.session_id,
@@ -118,7 +118,13 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
                 "mode": "read_only",
             },
         )
-        return {"status": "conflict", "memory_id": memory.memory_id, "read_only": True, "ledger": result}
+        return {
+            "status": "conflict",
+            "memory_id": memory.memory_id,
+            "read_only": True,
+            "lock_reason": "conflict",
+            "ledger": result,
+        }
     if result.get("status") != "accepted":
         raise HTTPException(status_code=502, detail="Continuity Ledger returned an unconfirmed write result")
     ledger_memory = result.get("memory") or {}
@@ -170,10 +176,11 @@ async def supersede_memory(
         raise HTTPException(status_code=503, detail="Continuity Ledger unavailable") from exc
     if result.get("refused") is True or result.get("accepted") is False:
         if result.get("refuse_reason") == "conflict-membrane":
-            engine.set_read_only(request.session_id)
+            engine.set_read_only(request.session_id, "conflict")
         return {
             "status": "conflict" if result.get("refuse_reason") == "conflict-membrane" else "refused",
             "read_only": engine.is_read_only(request.session_id),
+            "lock_reason": (reason.value if (reason := engine.lock_reason(request.session_id)) else None),
             "ledger": result,
         }
     replacement = result.get("memory") or result.get("replacement") or {}
@@ -198,7 +205,9 @@ async def supersede_memory(
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(payload: ChatRequest, request: Request, x_jarvis_service_token: str = Header(default="")) -> ChatResponse:
+async def chat(
+    payload: ChatRequest, request: Request, x_jarvis_service_token: str = Header(default="")
+) -> ChatResponse:
     """Send a message to Jarvis and receive a reply plus v0 heuristic session state."""
     principal = guard_visitor_mutation(request)
     active = bound_engine(request)
@@ -216,6 +225,8 @@ async def chat(payload: ChatRequest, request: Request, x_jarvis_service_token: s
         if payload.user_id != settings.recall_owner_user_id:
             raise HTTPException(status_code=403, detail="User ID does not match the server-bound operator")
         recall_owner = settings.recall_owner_user_id
+    if payload.session_id:
+        require_session(request, engine.access, payload.session_id)
     try:
         return await active.chat(payload, recall_owner=recall_owner, principal=principal)
     except ProviderError as exc:
@@ -236,8 +247,7 @@ async def resume_session(payload: ResumeRequest, request: Request) -> dict[str, 
     principal = guard_visitor_mutation(request)
     active = bound_engine(request)
     user_id = bind_user(request, payload.user_id) if principal else payload.user_id
-    if principal:
-        require_session(request, engine.access, payload.session_id)
+    require_session(request, engine.access, payload.session_id)
     try:
         await active.get_or_create_session(user_id, payload.session_id)
         return {
@@ -277,6 +287,7 @@ async def memory_inspection(
     session_id: str, request: Request, user_id: str, x_jarvis_service_token: str = Header(default="")
 ) -> dict[str, Any]:
     principal = visitor(request)
+    require_session(request, engine.access, session_id)
     if principal:
         user_id = bind_user(request, user_id)
         active = owned_engine(request, session_id)

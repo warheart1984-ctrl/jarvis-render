@@ -22,9 +22,33 @@ async def test_restart_recovers_verified_checkpoint_as_read_only(tmp_path: Path)
 
     assert state.session_id == response.session_id
     assert restarted.is_read_only(response.session_id)
+    assert restarted.lock_reason(response.session_id).value == "recovery"
     assert state.turn_count == 1
-    with pytest.raises(ValueError, match="read-only"):
+    with pytest.raises(ValueError, match="reason=recovery"):
         await restarted.chat(ChatRequest(user_id="u1", session_id=response.session_id, message="Continue"))
+
+
+@pytest.mark.asyncio
+async def test_conflict_and_verification_locks_use_distinct_reason_codes(tmp_path: Path) -> None:
+    path = tmp_path / "locks.sqlite3"
+    engine = JarvisEngine(store=JarvisStore(path))
+    response = await engine.chat(ChatRequest(user_id="u1", message="start"))
+    engine.set_read_only(response.session_id, "conflict")
+    assert engine.lock_reason(response.session_id).value == "conflict"
+    with pytest.raises(ValueError, match="reason=conflict"):
+        await engine.chat(ChatRequest(user_id="u1", session_id=response.session_id, message="Continue"))
+    other = await engine.chat(ChatRequest(user_id="u1", message="another session"))
+    engine.set_read_only(other.session_id, "verification")
+    summary = engine.get_state_summary(other.session_id)
+    assert summary["lock_reason"] == "verification"
+    assert summary["recovered"] is False
+    recovered = engine.get_state_summary(response.session_id)
+    assert recovered["lock_reason"] == "conflict"
+    assert recovered["recovered"] is False
+    engine.authorize_session(response.session_id)
+    assert engine.is_read_only(response.session_id) is False
+    engine.authorize_session(other.session_id)
+    assert engine.is_read_only(other.session_id) is True
 
 
 @pytest.mark.asyncio

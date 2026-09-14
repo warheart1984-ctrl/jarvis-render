@@ -39,9 +39,10 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Jarvis — conversational FastAPI layer with a v0 keyword emotion "
-        "classifier, a bounded five-variable spiral-state tracker, adaptive "
-        "memory, and an optional Spiral Intelligence V8 client. Heuristic "
-        "state, not trained emotion inference or computational spiral geometry."
+        "classifier, a bounded five-variable spiral-state tracker, a v0 "
+        "DOS-lite deliberation pipeline, adaptive memory, and an optional "
+        "Spiral Intelligence V8 client. Heuristic state, not trained emotion "
+        "inference, computational spiral geometry, or a full DOS Kernel."
     ),
     lifespan=lifespan,
 )
@@ -126,8 +127,8 @@ async def service_boundary(request: Request, call_next):
 
 
 # CORS — origins are driven by JARVIS_CORS_ORIGINS (comma-separated).
-# Default "*" is for local development only; set an explicit allowlist in production.
-_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# Default "*" is for local development only; production uses an explicit allowlist.
+_cors_origins = settings.allowed_cors_origins()
 _allow_credentials = _cors_origins != ["*"]
 app.add_middleware(
     CORSMiddleware,
