@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 .env
+client_secret_*.json
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/

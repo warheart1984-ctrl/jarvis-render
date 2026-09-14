@@ -6,7 +6,7 @@ const $ = id => document.getElementById(id);
 let session = "", connected = false, busy = false, recovered = false;
 let recording = null, timer = null, recordingStart = false, caps = {};
 let playback = null, audioUrl = null, speechAbort = null, speechGeneration = 0;
-let governanceGeneration = 0;
+let governanceGeneration = 0, csrf = "", authMode = "operator";
 function clearInspection() {
   renderInspection($("memory-inspection"), null);
   $("audit-state").textContent = "Audit verification is not current. Refresh after reconnecting.";
@@ -50,14 +50,19 @@ async function request(path, options = {}, audio = false) {
   external?.addEventListener("abort", abort, { once: true });
   if (external?.aborted) controller.abort();
   try {
-    const headers = { "X-Jarvis-Service-Token": $("token").value.trim(), ...options.headers };
-    const response = await fetch(path, { ...options, headers, signal: controller.signal, cache: "no-store" });
+    const headers = { ...options.headers };
+    const token = $("token").value.trim();
+    if (token) headers["X-Jarvis-Service-Token"] = token;
+    if (csrf) headers["X-Jarvis-CSRF"] = csrf;
+    const response = await fetch(path, { ...options, headers, signal: controller.signal, cache: "no-store", credentials: "same-origin" });
     if (!response.ok) {
       let detail; try { detail = (await response.json()).detail; } catch {}
       if (response.status === 401) {
         governanceGeneration++; clearInspection();
         connected = false; controls();
-        throw Error("Service token not accepted. Enter your Jarvis token and reconnect.");
+        throw Error(authMode === "oauth"
+          ? "Session expired or sign-in required. Sign in with Google and try again."
+          : "Service token not accepted. Enter your Jarvis token and reconnect.");
       }
       throw Error(typeof detail === "string" ? detail : "Request failed (HTTP " + response.status + ").");
     }
@@ -168,17 +173,15 @@ async function governance() {
     : "Recovered session: history is available, but new turns are locked. Start a new chat to continue.";
   controls();
 }
-$("connect-form").onsubmit = async e => {
-  e.preventDefault(); if (busy) return;
-  busy = true; controls(); error(); activity("Connecting…");
-  try {
-    caps = await request("/capabilities");
+async function afterConnect() {
     $("write-policy").textContent = caps.governed_writes_enabled
       ? "Development governed writes enabled by operator. New local memories still start as drafts."
       : "Governed writes disabled · new local memories stay draft. Production EMR gates are not enabled.";
-    if (caps.recall_configured) $("user-id").value = caps.recall_owner_user_id;
+    if (caps.recall_configured && caps.recall_owner_user_id) $("user-id").value = caps.recall_owner_user_id;
     $("recall-state").textContent = caps.recall_configured
-      ? "Operator-scoped recall ready. Only verified prior history will be used."
+      ? (authMode === "oauth"
+        ? "Account-scoped recall ready. Only verified prior history for this sign-in will be used."
+        : "Operator-scoped recall ready. Only verified prior history will be used.")
       : "Cross-session recall is not configured on this server.";
     connected = true;
     $("connection").textContent = caps.chat_configured ? caps.provider + " chat configured" : "Local responder · NVIDIA not configured";
@@ -192,6 +195,13 @@ $("connect-form").onsubmit = async e => {
     }
     if (session) await governance();
     activity(recovered ? "Start a new chat to continue." : "Ready.");
+}
+$("connect-form").onsubmit = async e => {
+  e.preventDefault(); if (busy || authMode === "oauth") return;
+  busy = true; controls(); error(); activity("Connecting…");
+  try {
+    caps = await request("/capabilities");
+    await afterConnect();
   } catch (e) { error(e.message); activity("Connection needs attention."); }
   finally { busy = false; controls(); }
 };
@@ -236,6 +246,47 @@ $("mode").onchange = () => {
 $("spoken").onchange = () => { if (!$("spoken").checked) stopAudio(); };
 $("stop-audio").onclick = () => { stopAudio(); activity("Audio stopped."); };
 $("refresh").onclick = () => governance().catch(e => error(e.message));
+$("sign-out").onclick = async () => {
+  try {
+    await fetch("/auth/logout", {
+      method: "POST",
+      headers: csrf ? { "X-Jarvis-CSRF": csrf } : {},
+      credentials: "same-origin",
+      cache: "no-store"
+    });
+  } finally { location.href = "/ui/"; }
+};
+async function bootstrapAuth() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("login") === "failed") error("Google sign-in did not complete. Try again.");
+  try {
+    const identity = await fetch("/auth/session", { cache: "no-store", credentials: "same-origin" }).then(r => r.json());
+    authMode = identity.auth_mode || "operator";
+    csrf = identity.csrf || "";
+    if (authMode === "oauth") {
+      $("user-field").hidden = true; $("token-field").hidden = true; $("connect").hidden = true;
+      $("operator-hint").hidden = true; $("oauth-hint").hidden = false;
+      $("google-login").hidden = identity.authenticated;
+      $("sign-out").hidden = !identity.authenticated;
+      $("token").required = false; $("user-id").required = false;
+      if (!identity.authenticated) {
+        $("connection").textContent = "Sign in with Google to chat";
+        activity("Sign in to start.");
+        controls();
+        return;
+      }
+      $("user-id").value = identity.user_id;
+      busy = true; controls(); activity("Connecting…");
+      try {
+        caps = await request("/capabilities");
+        await afterConnect();
+      } catch (e) { error(e.message); activity("Connection needs attention."); }
+      finally { busy = false; controls(); }
+    }
+  } catch {
+    $("connection").textContent = "Service unavailable";
+  }
+}
 async function finishRecording() {
   if (!recording) return;
   const capture = recording; recording = null; clearTimeout(timer);
@@ -262,4 +313,5 @@ $("mic").onclick = async () => {
 window.addEventListener("pagehide", () => { clearTimeout(timer); recording?.stop(); stopAudio(); });
 fetch("/health", { cache: "no-store" }).then(r => { $("connection").textContent = r.ok ? "Service reachable · connect to chat" : "Service unavailable"; })
   .catch(() => { $("connection").textContent = "Service unavailable"; });
+bootstrapAuth();
 controls();

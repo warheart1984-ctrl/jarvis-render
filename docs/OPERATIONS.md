@@ -10,6 +10,31 @@ Install with `poetry install`, copy `.env.example` to `.env`, and run
 Set `JARVIS_ENVIRONMENT=production`, a strong `JARVIS_SERVICE_TOKEN`, an
 explicit comma-separated `JARVIS_CORS_ORIGINS` allowlist, and a persistent
 `JARVIS_MEMORY_DB_PATH`. Do not use `*` for CORS in production.
+`JARVIS_SERVICE_TOKEN` is operator break-glass. Do not put it in the browser
+when `JARVIS_AUTH_MODE=oauth`.
+
+## Google sign-in via a managed IdP
+
+Leave `JARVIS_AUTH_MODE=operator` until the IdP is ready. Then set
+`JARVIS_AUTH_MODE=oauth` and point Jarvis at Auth0 (or an equivalent with API
+audiences and custom scopes). Google is a **social connection on the IdP**,
+not Jarvis's authorization server.
+
+Auth0 minimum:
+
+1. Regular Web Application. Allowed callback:
+   `https://<host>/auth/callback` and `http://127.0.0.1:8100/auth/callback`.
+2. API identifier = `JARVIS_OIDC_AUDIENCE` (the ledger resource). Scopes:
+   `memory.read`, `memory.write`. Authorize the web app for both.
+3. Social connection: Google. Scopes on Google stay `openid email profile`.
+4. Env: `JARVIS_OIDC_ISSUER`, `JARVIS_OIDC_AUDIENCE`, `JARVIS_OIDC_JWKS_URL`,
+   `JARVIS_OIDC_CLIENT_ID`, `JARVIS_OIDC_CLIENT_SECRET`,
+   `JARVIS_PUBLIC_ORIGIN`, `JARVIS_RECALL_SIGNING_KEY`.
+5. `JARVIS_OIDC_CONNECTION=google-oauth2` sends users straight to Google.
+
+The UI keeps an HttpOnly session cookie. The ledger access token stays on the
+server and is sent to Continuity only as `Authorization: Bearer` with
+`aud` = ledger and both memory scopes. Jarvis does not mint those JWTs.
 
 ## Recovery
 

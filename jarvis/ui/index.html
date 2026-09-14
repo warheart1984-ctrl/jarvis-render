@@ -9,16 +9,19 @@
 </head>
 <body>
   <header><a class="brand" href="/ui/"><span class="orb" aria-hidden="true"></span>JARVIS</a>
-    <span id="connection" role="status">Connecting to service…</span></header>
+    <span class="header-status"><span id="connection" role="status">Connecting to service…</span>
+      <button id="sign-out" type="button" class="secondary" hidden>Sign out</button></span></header>
   <main>
     <section class="chat card" aria-label="Chat">
       <div class="chat-heading"><div><span class="eyebrow">Your conversation, with continuity</span>
         <h1>Talk to Jarvis.</h1></div><button id="new-chat" type="button" class="secondary">New chat</button></div>
       <form id="connect-form" class="connect">
-        <label>User ID<input id="user-id" value="web-user" maxlength="200" autocomplete="username" required></label>
-        <label>Service token<input id="token" type="password" placeholder="Your Jarvis service token" autocomplete="off" required></label>
+        <label id="user-field">User ID<input id="user-id" value="web-user" maxlength="200" autocomplete="username" required></label>
+        <label id="token-field">Service token<input id="token" type="password" placeholder="Your Jarvis service token" autocomplete="off" required></label>
         <button id="connect" type="submit">Connect</button>
-        <p class="hint">Use the Jarvis service token here. Your NVIDIA key stays on the server. This page does not save tokens.</p>
+        <a id="google-login" class="google-login" href="/auth/login" hidden>Sign in with Google</a>
+        <p id="operator-hint" class="hint">Use the Jarvis service token here. Your NVIDIA key stays on the server. This page does not save tokens.</p>
+        <p id="oauth-hint" class="hint" hidden>Google is only the sign-in. Jarvis keeps a session cookie; the ledger access token never enters this page.</p>
       </form>
       <div class="toolbar">
         <label>Mode <select id="mode"><option value="text">Text</option><option value="voice">Voice</option></select></label>
@@ -52,7 +55,7 @@
       </section>
       <section class="card panel"><h2>Memory & recovery</h2>
         <label class="consent"><input id="recall" type="checkbox" checked disabled> Recall previous conversation (read-only)</label>
-        <p class="hint">When enabled, a bounded excerpt of your latest eligible verified conversation is sent to the chat provider. The source stays unchanged. This service uses a single operator token, not separate user logins.</p>
+        <p class="hint">When enabled, a bounded excerpt of your latest eligible verified conversation is sent to the chat provider. The source stays unchanged. Signed-in accounts use their own tenant; the operator token is break-glass only.</p>
         <p id="recall-state" role="status">Connect to check recall availability.</p>
         <label class="consent"><input id="consent" type="checkbox"> Save local draft memories when policy permits</label>
         <p class="hint">Conversation history is saved on the server. Draft memories may be included in later chat context; they are not approved facts. Read-only turns cannot extract new memories.</p>
