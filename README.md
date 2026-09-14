@@ -11,7 +11,13 @@ fail-closed gates, claim tags, and the local fallback responder. They are
 or a full constitutional OS / DOS Kernel.
 
 New memories stay draft; production governed writes remain disabled pending
-EMR gates. The same honesty applies here: these engines are useful application
+EMR gates. Hypothesized claims, tool/search snippets, and inferred summaries
+are not admitted to memory, preferences, or Continuity — even if that makes
+recall look dumber. Production cannot reopen that write path with
+`JARVIS_GOVERNED_WRITES_ENABLED=true`. Product lock (not a security audit,
+not OTEM), SHA-256
+`02c03803b2181aeaeb2429d30102802f9094348b32569284bd4a0c2c566e3da3`.
+The same honesty applies here: these engines are useful application
 heuristics. Ambition may grow later; this release does **not** claim trained
 inference or true spiral math.
 

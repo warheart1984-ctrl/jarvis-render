@@ -757,6 +757,83 @@ def resolve_claim_gate(
     return resolution, reasons, response, memory
 
 
+_TOOL_MEMORY_SOURCES = frozenset(
+    {
+        "web_search",
+        "calculator",
+        "clock",
+        "weather",
+        "document_retrieval",
+        "health",
+    }
+)
+_INFERRED_SUMMARY_HINTS = (
+    " is the ",
+    " are the ",
+    " was the ",
+    " were the ",
+    " according to ",
+    " the capital ",
+    " equals ",
+    " result is ",
+)
+
+
+def apply_write_path_lock(
+    claims: list[ClaimRecord],
+    evidence: list[EvidenceRef],
+    memory_admission: Literal["eligible", "held", "blocked"],
+    *,
+    reply: str = "",
+) -> tuple[Literal["eligible", "held", "blocked"], list[str]]:
+    """Refuse hypothesized, tool-cited, and inferred-summary memory writes.
+
+    Durable product lock. ``JARVIS_GOVERNED_WRITES_ENABLED`` cannot reopen this
+    path. User-grounded Observed facts may stay eligible when the reply is not
+    a hypothesized world-fact or a tool summary; mixed turns fail closed.
+    """
+
+    if memory_admission != "eligible":
+        return memory_admission, []
+    reasons: list[str] = []
+    by_id = {item.evidence_id: item for item in evidence}
+    if any(item.kind is EvidenceKind.TOOL_EXTERNAL and item.source in _TOOL_MEMORY_SOURCES for item in evidence):
+        reasons.append("tool_external evidence cannot be admitted to memory")
+    lower_reply = f" {reply.lower()} " if reply else ""
+    if lower_reply and any(hint in lower_reply for hint in _INFERRED_SUMMARY_HINTS):
+        if any(item.kind is EvidenceKind.TOOL_EXTERNAL for item in evidence) or any(
+            claim.claim_id.startswith("claim-reply") and claim.tag is ClaimTag.HYPOTHESIZED for claim in claims
+        ):
+            reasons.append("inferred summary cannot be admitted to memory")
+    for claim in claims:
+        if not claim.claim_id.startswith("claim-reply"):
+            continue
+        kinds = {by_id[eid].kind for eid in claim.evidence_ids if eid in by_id}
+        if EvidenceKind.TOOL_EXTERNAL in kinds or EvidenceKind.HYPOTHESIZED_NONE in kinds:
+            reasons.append("hypothesized or tool_external claim cannot be admitted to memory")
+            continue
+        if claim.tag is not ClaimTag.HYPOTHESIZED:
+            continue
+        match claim.claim_class:
+            case ClaimClass.FACTUAL | ClaimClass.CAUSAL | ClaimClass.SAFETY_CRITICAL:
+                reasons.append("hypothesized reply claim cannot be admitted to memory")
+            case ClaimClass.CONVERSATIONAL | ClaimClass.INTERPRETIVE:
+                text = f" {claim.text.lower()} "
+                if any(hint in text for hint in _INFERRED_SUMMARY_HINTS):
+                    reasons.append("inferred summary cannot be admitted to memory")
+            case _:
+                assert_never(claim.claim_class)
+    if not reasons:
+        return memory_admission, []
+    unique: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        if reason not in seen:
+            seen.add(reason)
+            unique.append(reason)
+    return "blocked", unique
+
+
 def apply_coverage_gate(
     coverage: ReplyCoverage,
     resolution: ChallengeAction,
@@ -1188,8 +1265,11 @@ class DeliberationRunner:
         resolution, coverage_reasons, response_commit, memory_admission = apply_coverage_gate(
             coverage, resolution, response_commit, memory_admission
         )
+        memory_admission, lock_reasons = apply_write_path_lock(
+            self.claims, self.evidence, memory_admission, reply=reply
+        )
         self.challenge_action = resolution
-        for reason in reasons + coverage_reasons:
+        for reason in reasons + coverage_reasons + lock_reasons:
             if reason not in self.challenge_reasons:
                 self.challenge_reasons.append(reason)
         self.response_commit = response_commit
