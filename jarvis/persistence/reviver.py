@@ -7,14 +7,18 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
+from jarvis.persistence.tenancy import LEGACY_SUBJECT, LEGACY_TENANT, ScopedLedger, migrate_scope
 
-class ReviverLedger:
-    def __init__(self, path: str = "jarvis.sqlite3") -> None:
-        self.path = path
+
+class ReviverLedger(ScopedLedger):
+    def __init__(self, path: str = "jarvis.sqlite3", tenant_id: str = LEGACY_TENANT,
+                 owner_sub: str = LEGACY_SUBJECT) -> None:
+        super().__init__(path, tenant_id, owner_sub)
         with sqlite3.connect(path) as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS reviver_checkpoints(checkpoint_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,turn_id TEXT NOT NULL,audit_hash TEXT NOT NULL,state_json TEXT NOT NULL,created_at TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0)"  # noqa: E501
             )
+            migrate_scope(db, "reviver_checkpoints")
 
     def save(
         self,
@@ -27,7 +31,7 @@ class ReviverLedger:
     ) -> None:
         with sqlite3.connect(self.path) as db:
             db.execute(
-                "INSERT INTO reviver_checkpoints VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO reviver_checkpoints VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     checkpoint_id,
                     session_id,
@@ -36,6 +40,7 @@ class ReviverLedger:
                     json.dumps(state, sort_keys=True),
                     datetime.now(timezone.utc).isoformat(),
                     int(verified),
+                    *self.scope,
                 ),
             )
 
@@ -43,8 +48,9 @@ class ReviverLedger:
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             row = db.execute(
-                "SELECT * FROM reviver_checkpoints WHERE session_id=? AND verified=1 ORDER BY created_at DESC LIMIT 1",
-                (session_id,),
+                "SELECT * FROM reviver_checkpoints WHERE session_id=? AND tenant_id=? AND owner_sub=? "
+                "AND verified=1 ORDER BY created_at DESC LIMIT 1",
+                (session_id, *self.scope),
             ).fetchone()
         return dict(row) if row else None
 

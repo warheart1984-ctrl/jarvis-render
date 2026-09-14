@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from urllib.parse import urlsplit
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
@@ -94,14 +95,67 @@ class JarvisSettings(BaseSettings):
     recall_owner_user_id: str = ""
     environment: str = "development"
     governed_writes_enabled: bool = False
+    auth_mode: Literal["operator", "oauth"] = "operator"
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_authorize_url: str = ""
+    oidc_token_url: str = ""
+    oidc_connection: str = "google-oauth2"
+    oidc_scopes: str = "openid profile email memory.read memory.write"
+    recall_signing_key: str = ""
+    public_origin: str = "http://127.0.0.1:8100"
+    visitor_session_hours: int = Field(default=24, ge=1, le=168)
+    visitor_chat_daily_limit: int = Field(default=100, ge=1, le=10000)
+    visitor_voice_daily_limit: int = Field(default=60, ge=1, le=10000)
 
     def governed_writes_allowed(self) -> bool:
         # Production promotion requires EMR gates, which are not implemented yet.
         return self.governed_writes_enabled and self.environment.lower() not in {"production", "prod"}
 
+    def oauth_enabled(self) -> bool:
+        return self.auth_mode == "oauth"
+
+    def oauth_configured(self) -> bool:
+        return bool(
+            self.oidc_issuer.strip()
+            and self.oidc_audience.strip()
+            and self.oidc_jwks_url.strip()
+            and self.oidc_client_id.strip()
+            and self.oidc_client_secret.strip()
+        )
+
+    def identity_issuer(self) -> str:
+        issuer = self.oidc_issuer.strip()
+        return issuer or "https://accounts.google.com"
+
+    def authorize_endpoint(self) -> str:
+        return self.oidc_authorize_url.strip() or f"{self.identity_issuer().rstrip('/')}/authorize"
+
+    def token_endpoint(self) -> str:
+        return self.oidc_token_url.strip() or f"{self.identity_issuer().rstrip('/')}/oauth/token"
+
+    def callback_url(self) -> str:
+        return self.public_origin.rstrip("/") + "/auth/callback"
+
     def validate_deployment(self) -> None:
         if self.environment.lower() in {"production", "prod"} and not self.service_token:
             raise RuntimeError("JARVIS_SERVICE_TOKEN is required in production")
+        if self.auth_mode == "oauth":
+            if not self.oauth_configured():
+                raise RuntimeError(
+                    "OAuth mode requires JARVIS_OIDC_ISSUER, JARVIS_OIDC_AUDIENCE, "
+                    "JARVIS_OIDC_JWKS_URL, JARVIS_OIDC_CLIENT_ID, and JARVIS_OIDC_CLIENT_SECRET"
+                )
+            if not self.recall_signing_key:
+                raise RuntimeError("JARVIS_RECALL_SIGNING_KEY is required in OAuth mode")
+            parsed = urlsplit(self.public_origin)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+                raise RuntimeError("JARVIS_PUBLIC_ORIGIN must be an absolute http(s) origin")
+            if self.environment.lower() in {"production", "prod"} and parsed.scheme != "https":
+                raise RuntimeError("JARVIS_PUBLIC_ORIGIN must be HTTPS in production")
 
     model_config = {"env_prefix": "JARVIS_", "env_file": ".env", "extra": "ignore"}
 

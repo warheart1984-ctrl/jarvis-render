@@ -16,6 +16,7 @@ from typing import Any
 from jarvis.models.jarvis_types import JarvisState
 from jarvis.persistence.audit import AuditLedger
 from jarvis.persistence.reviver import ReviverLedger
+from jarvis.persistence.tenancy import LEGACY_SUBJECT, LEGACY_TENANT, ScopedLedger, migrate_scope
 
 
 def canonical(value: Any) -> str:
@@ -32,9 +33,9 @@ class RecallResult:
     state: JarvisState | None = None
 
 
-class RecallLedger:
-    def __init__(self, path: str) -> None:
-        self.path = path
+class RecallLedger(ScopedLedger):
+    def __init__(self, path: str, tenant_id: str = LEGACY_TENANT, owner_sub: str = LEGACY_SUBJECT) -> None:
+        super().__init__(path, tenant_id, owner_sub)
         with sqlite3.connect(path) as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS recall_checkpoints ("
@@ -45,6 +46,25 @@ class RecallLedger:
             )
             db.execute("CREATE INDEX IF NOT EXISTS recall_owner_time ON recall_checkpoints(owner, created_at DESC)")
             db.execute("CREATE TABLE IF NOT EXISTS recall_revoked(session_id TEXT PRIMARY KEY)")
+            migrate_scope(db, "recall_checkpoints")
+            migrate_scope(db, "recall_revoked")
+            if "signature_version" not in {r[1] for r in db.execute("PRAGMA table_info(recall_checkpoints)")}:
+                db.execute("ALTER TABLE recall_checkpoints ADD COLUMN signature_version INTEGER NOT NULL DEFAULT 1")
+
+    def valid_signature(self, row: dict, key: str) -> bool:
+        record = dict(row)
+        supplied = record.pop("signature")
+        version = record.get("signature_version", 1)
+        if version == 1:
+            if self.scope != (LEGACY_TENANT, LEGACY_SUBJECT):
+                return False
+            for field in ("signature_version", "tenant_id", "owner_sub"):
+                record.pop(field, None)
+        elif version != 2:
+            return False
+        elif (record.get("tenant_id"), record.get("owner_sub")) != self.scope:
+            return False
+        return hmac.compare_digest(supplied, signature(record, key))
 
     def attest(
         self, session_id: str, owner: str, key: str, *, expected_state: dict[str, Any] | None = None
@@ -56,7 +76,7 @@ class RecallLedger:
         """
         if not key or not owner:
             raise ValueError("Recall requires a service token and a server-bound owner")
-        checkpoint = ReviverLedger(self.path).recover(session_id, AuditLedger(self.path))
+        checkpoint = ReviverLedger(self.path, *self.scope).recover(session_id, AuditLedger(self.path, *self.scope))
         if checkpoint is None:
             raise ValueError("Checkpoint or audit could not be verified")
         state = JarvisState.model_validate(checkpoint["state"])
@@ -73,30 +93,34 @@ class RecallLedger:
             "state_sha256": hashlib.sha256(canonical(checkpoint["state"]).encode()).hexdigest(),
             "audit_hash": checkpoint["audit_hash"],
             "origin": "authenticated_turn" if expected_state is not None else "operator_attested_legacy",
+            "tenant_id": self.tenant_id,
+            "owner_sub": self.owner_sub,
+            "signature_version": 2,
         }
         record["signature"] = signature(record, key)
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row
             existing = db.execute(
-                "SELECT * FROM recall_checkpoints WHERE checkpoint_id=? AND key_id=?",
-                (record["checkpoint_id"], record["key_id"]),
+                "SELECT * FROM recall_checkpoints WHERE checkpoint_id=? AND key_id=? AND tenant_id=? AND owner_sub=?",
+                (record["checkpoint_id"], record["key_id"], *self.scope),
             ).fetchone()
             if existing:
                 # Idempotent even when an operator re-attests a newly signed turn.
                 prior = dict(existing)
-                prior_signature = prior.pop("signature")
-                if not hmac.compare_digest(prior_signature, signature(prior, key)) or any(
-                    prior[k] != record[k] for k in prior if k != "origin"
+                if not self.valid_signature(prior, key) or any(
+                    prior[k] != record[k] for k in prior if k not in {"origin", "signature", "signature_version"}
                 ):
                     raise ValueError("Immutable recall attestation mismatch")
                 return dict(existing)
-            db.execute("INSERT INTO recall_checkpoints VALUES (?,?,?,?,?,?,?,?,?)", tuple(record.values()))
+            columns = ",".join(record)
+            placeholders = ",".join("?" for _ in record)
+            db.execute(f"INSERT INTO recall_checkpoints ({columns}) VALUES ({placeholders})", tuple(record.values()))
         return record
 
     def revoke(self, session_id: str) -> None:
         """A clear-memory request permanently excludes this source from recall."""
         with sqlite3.connect(self.path) as db:
-            db.execute("INSERT OR IGNORE INTO recall_revoked VALUES (?)", (session_id,))
+            db.execute("INSERT OR IGNORE INTO recall_revoked VALUES (?,?,?)", (session_id, *self.scope))
 
     def previous(self, owner: str, key: str, *, session_id: str, before: str) -> RecallResult:
         if not key or not owner:
@@ -106,18 +130,21 @@ class RecallLedger:
                 db.row_factory = sqlite3.Row
                 row = db.execute(
                     "SELECT * FROM recall_checkpoints WHERE owner=? AND session_id!=? AND created_at<? "
+                    "AND tenant_id=? AND owner_sub=? "
                     "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                    (owner, session_id, before),
+                    (owner, session_id, before, *self.scope),
                 ).fetchone()
                 if not row:
                     return RecallResult({"status": "no_eligible_history"})
                 record = dict(row)
-                supplied = record.pop("signature")
-                if not hmac.compare_digest(supplied, signature(record, key)):
+                if not self.valid_signature(record, key):
                     return RecallResult({"status": "unverified"})
-                if db.execute("SELECT 1 FROM recall_revoked WHERE session_id=?", (record["session_id"],)).fetchone():
+                if db.execute("SELECT 1 FROM recall_revoked WHERE session_id=? AND tenant_id=? AND owner_sub=?",
+                              (record["session_id"], *self.scope)).fetchone():
                     return RecallResult({"status": "withheld"})
-            checkpoint = ReviverLedger(self.path).recover(record["session_id"], AuditLedger(self.path))
+            checkpoint = ReviverLedger(self.path, *self.scope).recover(
+                record["session_id"], AuditLedger(self.path, *self.scope)
+            )
             if checkpoint is None or any(
                 checkpoint[k] != record[k] for k in ("checkpoint_id", "session_id", "created_at", "audit_hash")
             ):
@@ -134,6 +161,8 @@ class RecallLedger:
                     "audit_hash": record["audit_hash"],
                     "source_updated_at": record["created_at"],
                     "attestation": record["origin"],
+                    "tenant_id": self.tenant_id,
+                    "owner_sub": self.owner_sub,
                     "read_only": True,
                 },
                 state,
@@ -144,7 +173,8 @@ class RecallLedger:
 
     def is_revoked(self, session_id: str) -> bool:
         with sqlite3.connect(self.path) as db:
-            return db.execute("SELECT 1 FROM recall_revoked WHERE session_id=?", (session_id,)).fetchone() is not None
+            return db.execute("SELECT 1 FROM recall_revoked WHERE session_id=? AND tenant_id=? AND owner_sub=?",
+                              (session_id, *self.scope)).fetchone() is not None
 
 
 def main() -> None:
