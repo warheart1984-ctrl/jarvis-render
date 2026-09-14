@@ -179,6 +179,116 @@ def test_evidenced_answer_without_source_tokens_is_not_unsupported() -> None:
     assert "match_text" not in public
 
 
+PHRASE_TRIGGER_SAFETY = (
+    "You asked for a safer planner and this provides consistent safety "
+    "boundaries for production deploy."
+)
+PHRASE_TRIGGER_SAFETY_TURN = (
+    "You asked for a safer planner. This provides consistent safety "
+    "boundaries for production deploy."
+)
+NEGATED_SOURCE = "This does not provide consistent safety boundaries for production deploy."
+NEGATED_CLAIM = "This provides consistent safety boundaries for production deploy."
+
+
+def test_you_asked_does_not_support_unverified_safety_claim() -> None:
+    """Phrase-trigger false support: restatement glue cannot launder a safety claim."""
+
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    lowered = PHRASE_TRIGGER_SAFETY.lower()
+    assert "you asked" in lowered
+    runner.evaluate(PHRASE_TRIGGER_SAFETY)
+    result = runner.commit()
+    safety = next(c for c in result.claims if c.claim_class.value == "safety_critical")
+    assert safety.support.value == "missing"
+    assert safety.action is ChallengeAction.BLOCK
+    assert result.response_commit == "refused"
+    assert result.committed is False
+    public = json.dumps(result.to_public_dict())
+    assert "match_text" not in public
+
+
+def test_you_asked_turn_still_blocks_unsupported_safety_sentence() -> None:
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    runner.evaluate(PHRASE_TRIGGER_SAFETY_TURN)
+    result = runner.commit()
+    safety = next(
+        c
+        for c in result.claims
+        if c.claim_id.startswith("claim-reply") and c.claim_class.value == "safety_critical"
+    )
+    assert safety.support.value == "missing"
+    assert result.response_commit == "refused"
+    assert result.committed is False
+
+
+def test_negated_source_overlap_is_not_support() -> None:
+    """Token overlap with a source that denies the assertion is not justification."""
+
+    runner = DeliberationRunner()
+    runner.observe(
+        message="Can we ship this?",
+        session_id="s1",
+        memories=[("mem-safety", NEGATED_SOURCE)],
+        emotion_rationale=["baseline emotional profile"],
+    )
+    runner.interpret(emotion_label="driven", intent="transform", phase="respond", confidence=0.82)
+    runner.infer()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    runner.evaluate(NEGATED_CLAIM)
+    result = runner.commit()
+    safety = next(c for c in result.claims if c.claim_class.value == "safety_critical")
+    assert safety.support.value == "missing"
+    assert safety.action is ChallengeAction.BLOCK
+    assert "mem-safety" not in safety.evidence_ids
+    assert result.response_commit == "refused"
+    assert result.committed is False
+    public = json.dumps(result.to_public_dict())
+    assert NEGATED_SOURCE not in public
+    assert "match_text" not in public
+
+
+def test_thirteenth_sentence_does_not_commit_unchecked() -> None:
+    runner = DeliberationRunner()
+    runner.observe(message="Let's talk.", session_id="s1")
+    runner.interpret(emotion_label="calm", intent="transform", phase="respond", confidence=0.82)
+    runner.infer()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    sentences = [f"That's a great question number {i}" for i in range(1, 14)]
+    runner.evaluate(". ".join(sentences) + ".")
+    result = runner.commit()
+    assert result.reply_coverage.sentence_count == 13
+    assert result.reply_coverage.tagged_count == 12
+    assert result.reply_coverage.complete is False
+    assert result.reply_coverage.uncovered
+    assert any("number 13" in item for item in result.reply_coverage.uncovered)
+    assert result.response_commit != "committed"
+    assert any("unchecked reply text" in reason for reason in result.challenge_reasons)
+
+
+def test_over_240_char_sentence_tail_is_not_skipped() -> None:
+    runner = _runner_with_evidence()
+    runner.challenge(uncertainty=0.18, stress=0.1)
+    padding = "Please note this ordinary status update about the weather today " * 8
+    assert len(padding) > 240
+    assert "." not in padding
+    tail = "This provides consistent safety boundaries for production deploy"
+    reply = padding + tail
+    assert "consistent safety" not in reply[:240]
+    assert "production deploy" not in reply[:240]
+    runner.evaluate(reply)
+    result = runner.commit()
+    assert any(c.claim_class.value == "safety_critical" for c in result.claims)
+    safety = next(c for c in result.claims if c.claim_class.value == "safety_critical")
+    assert safety.support.value == "missing"
+    assert result.response_commit == "refused"
+    assert result.committed is False
+    public = json.dumps(result.to_public_dict())
+    assert "match_text" not in public
+
+
 def test_whole_answer_coverage_accounts_for_every_reply_sentence() -> None:
     runner = _runner_with_evidence()
     runner.challenge(uncertainty=0.18, stress=0.1)

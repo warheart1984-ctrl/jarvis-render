@@ -1,5 +1,5 @@
 import { createRecorder, disposePlayback } from "./audio.js";
-import { preserveDraftOnNewChat, readDraft, writeDraft } from "./draft.js";
+import { clearDraftsOnLogout, composerDraftAfterAuth, preserveDraftOnNewChat, writeDraft } from "./draft.js";
 import { fallbackWaitMessage } from "./inference.js";
 import { lockBanner } from "./locks.js";
 import { recallStatus } from "./recall.js";
@@ -25,8 +25,13 @@ const storage = {
 };
 const active = storage.read();
 if (active?.user) $("user-id").value = active.user;
-if (!$("message").value) $("message").value = readDraft();
-$("message").addEventListener("input", () => writeDraft($("message").value));
+let draftAccount = "";
+function accountId() { return draftAccount; }
+function enableDraftsFor(userId) {
+  draftAccount = String(userId || "").trim();
+  $("message").value = composerDraftAfterAuth({ userId: draftAccount, authenticated: !!draftAccount });
+}
+$("message").addEventListener("input", () => { if (draftAccount) writeDraft(draftAccount, $("message").value); });
 function error(message = "") { $("error").textContent = message; $("error").hidden = !message; }
 function activity(message) { $("activity").textContent = message; }
 function textMode(reason) {
@@ -208,6 +213,7 @@ async function afterConnect() {
       for (const m of data.memory.conversation_history) message(m.role === "user" ? "user" : "jarvis", m.content, null, m.turn_id);
     }
     if (session) await governance();
+    enableDraftsFor($("user-id").value);
     activity(recovered ? "Start a new chat to continue." : "Ready.");
 }
 $("connect-form").onsubmit = async e => {
@@ -222,7 +228,7 @@ $("connect-form").onsubmit = async e => {
 $("new-chat").onclick = () => {
   governanceGeneration++; clearInspection();
   stopAudio(); session = ""; recovered = false; storage.clear();
-  const kept = preserveDraftOnNewChat($("message").value);
+  const kept = preserveDraftOnNewChat(accountId(), $("message").value);
   $("messages").replaceChildren(); $("session-label").textContent = "New conversation";
   $("recovery").hidden = true; error(); $("message").value = kept; $("consent").checked = false;
   for (const id of ["state", "trace", "audit"]) $(id).textContent = "No session yet.";
@@ -241,7 +247,7 @@ async function send(inputMode = "text") {
       message: text, input_mode: inputMode, memory_consent: $("consent").checked,
       recall_previous: !!caps.recall_configured && $("recall").checked });
     setSession(d.session_id); message("user", text); message("jarvis", d.reply, d); decision(d); $("message").value = "";
-    writeDraft("");
+    writeDraft(accountId(), "");
     try { await governance(); } catch (e) { error("Reply received, but governance refresh failed: " + e.message); }
     activity("Reply received.");
     if (d.safe_mode) { textMode("Inference " + d.inference_status + ". Jarvis is in basic safe-response mode."); return; }
@@ -270,7 +276,12 @@ $("sign-out").onclick = async () => {
       credentials: "same-origin",
       cache: "no-store"
     });
-  } finally { location.href = "/ui/"; }
+  } finally {
+    clearDraftsOnLogout(accountId());
+    $("message").value = "";
+    draftAccount = "";
+    location.href = "/ui/";
+  }
 };
 async function bootstrapAuth() {
   const params = new URLSearchParams(location.search);
