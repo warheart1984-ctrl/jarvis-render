@@ -119,7 +119,10 @@ class HttpSearchBackend:
         target = self.base_url + path
         actual = urlsplit(target)
         if not expected.hostname or actual.scheme != expected.scheme or actual.netloc != expected.netloc:
-            raise SearchUnavailable("refusing to call a host other than the configured search provider", retryable=False)
+            raise SearchUnavailable(
+                "refusing to call a host other than the configured search provider",
+                retryable=False,
+            )
         return target
 
     async def search(self, query: str, *, max_results: int) -> list[dict[str, str]]:

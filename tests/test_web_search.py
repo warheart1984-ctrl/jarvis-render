@@ -506,7 +506,11 @@ async def test_http_backend_only_calls_provider_never_hit_urls() -> None:
                     {"url": IMDS_URL, "title": "imds", "content": "ami-id"},
                     {"url": LOOPBACK_URL, "title": "loopback", "content": "nginx"},
                     {"url": RFC1918_URL, "title": "rfc1918", "content": "internal"},
-                    {"url": "https://example.org/paris", "title": "Paris", "content": "Paris is the capital of France."},
+                    {
+                        "url": "https://example.org/paris",
+                        "title": "Paris",
+                        "content": "Paris is the capital of France.",
+                    },
                 ]
             },
         )
