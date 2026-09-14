@@ -90,6 +90,13 @@ class ChatResponse(BaseModel):
             "blocked_reason": None,
             "response_commit": "committed",
             "memory_admission": "eligible",
+            "reply_coverage": {
+                "sentence_count": 0,
+                "tagged_count": 0,
+                "uncovered": [],
+                "complete": True,
+                "matcher": "v0-token-overlap",
+            },
         }
     )
 

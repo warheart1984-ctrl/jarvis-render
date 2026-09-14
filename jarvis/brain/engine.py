@@ -230,9 +230,12 @@ class JarvisEngine:
             runner.observe(
                 message=request.message,
                 session_id=state.session_id,
-                memories=[(m.memory_id, f"memory citation {m.memory_id}") for m in owned_memories[:8]],
+                memories=[(m.memory_id, m.content) for m in owned_memories[:8]],
                 history=[
-                    (str(item.get("turn_id") or index), f"{item.get('role', 'message')} history citation")
+                    (
+                        str(item.get("turn_id") or index),
+                        f"{item.get('role', 'message')}: {item.get('content', '')}",
+                    )
                     for index, item in enumerate(state.conversation_history[-8:])
                     if item.get("role") in {"user", "assistant"}
                 ],
