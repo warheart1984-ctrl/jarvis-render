@@ -8,7 +8,7 @@ import pytest
 from jarvis.brain import llm, speech
 from jarvis.brain.engine import JarvisEngine
 from jarvis.core.config import ProviderSlot, settings
-from jarvis.models.jarvis_types import ChatRequest
+from jarvis.models.jarvis_types import ChatRequest, EmotionState
 from jarvis.persistence import JarvisStore
 from tests.test_chat_voice import client, mock_provider  # noqa: F401
 
@@ -227,17 +227,26 @@ async def test_content_refusal_does_not_hunt_for_another_model(monkeypatch, mode
     assert len(calls) == 1
 
 
-def test_safe_mode_is_audited_read_only_and_cannot_be_spoken(client, monkeypatch, models):  # noqa: F811
+def test_safe_mode_is_availability_not_governance_fail_closed(client, monkeypatch, models):  # noqa: F811
     client, engine = client
     headers = {"X-Jarvis-Service-Token": "test-service-token"}
+    monkeypatch.setattr(
+        "jarvis.brain.engine.infer_emotion",
+        lambda *a, **k: EmotionState(confidence_bias=0.2, inferred_emotion="driven", stress=0.1),
+    )
     monkeypatch.setattr(llm, "_request_model", AsyncMock(side_effect=llm.ProviderError("Unavailable")))
     sync = AsyncMock()
     monkeypatch.setattr(engine, "_sync_with_spiral", sync)
-    data = client.post(
-        "/chat", headers=headers, json={"user_id": "u", "message": "Remember this", "memory_consent": True}
-    ).json()
-    assert data["safe_mode"] and data["decision"] == "fail_closed" and data["read_only"]
+    response = client.post(
+        "/chat",
+        headers=headers,
+        json={"user_id": "u", "message": "Let's build a safer planner.", "memory_consent": True},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["safe_mode"] and data["decision"] == "degraded" and data["read_only"]
     assert data["inference_status"] == "unavailable"
+    assert "inference" not in (data["fail_closed_reason"] or "")
     assert data["memory_snapshot"]["long_term_entries"] == 0
     sync.assert_not_awaited()
     attempts = [e for e in engine.get_audit(data["session_id"]) if e["event_type"] == "inference_attempt"]
@@ -253,7 +262,8 @@ def test_safe_mode_is_audited_read_only_and_cannot_be_spoken(client, monkeypatch
     again = client.post(
         "/chat", headers=headers, json={"user_id": "u", "session_id": data["session_id"], "message": "Still here?"}
     ).json()
-    assert again["safe_mode"] and again["memory_snapshot"]["conversation_turns"] == 2
+    assert again["safe_mode"] and again["decision"] == "degraded"
+    assert again["memory_snapshot"]["conversation_turns"] == 2
 
 
 async def test_overall_budget_stops_retries(monkeypatch):

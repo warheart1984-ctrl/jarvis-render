@@ -1,5 +1,6 @@
 import { createRecorder, disposePlayback } from "./audio.js";
 import { preserveDraftOnNewChat, readDraft, writeDraft } from "./draft.js";
+import { fallbackWaitMessage } from "./inference.js";
 import { lockBanner } from "./locks.js";
 import { recallStatus } from "./recall.js";
 import { deliberationView, receiptView, renderInspection } from "./memory.js";
@@ -135,10 +136,15 @@ function message(role, text, response = null, turnId = "") {
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }
 function decision(d) {
-  $("decision").textContent = d.read_only
-    ? "Read-only discussion. Consequential actions are paused: " + (d.fail_closed_reason || "policy restriction")
-    : "Response completed under Jarvis policy"
+  if (d.decision === "degraded") {
+    $("decision").textContent = "Provider availability degraded. Inference was not confirmed. This is not a governance fail-closed.";
+  } else if (d.read_only) {
+    $("decision").textContent = "Read-only discussion. Consequential actions are paused: " + (d.fail_closed_reason || "policy restriction")
+      + (d.safe_mode ? " Inference was not confirmed." : "");
+  } else {
+    $("decision").textContent = "Response completed under Jarvis policy"
       + (d.deliberation?.committed ? " after a v0 DOS-lite deliberation commit." : ".");
+  }
   $("confidence").textContent = Number(d.confidence).toFixed(2);
   $("uncertainty").textContent = Number(d.uncertainty).toFixed(2);
   $("provider").textContent = d.provider + " / " + d.model;
@@ -229,7 +235,7 @@ $("new-chat").onclick = () => {
 async function send(inputMode = "text") {
   if (busy || !connected || recovered || recording) return;
   const text = $("message").value.trim(); if (!text) return;
-  busy = true; controls(); error(); stopAudio(); activity("Jarvis is thinking…");
+  busy = true; controls(); error(); stopAudio(); activity(fallbackWaitMessage(caps.slots));
   try {
     const d = await post("/chat", { user_id: $("user-id").value.trim(), session_id: session || null,
       message: text, input_mode: inputMode, memory_consent: $("consent").checked,
