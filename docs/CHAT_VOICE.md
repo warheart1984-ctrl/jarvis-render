@@ -17,7 +17,11 @@ are held in memory and are not saved to disk.
 
 ## Provider configuration
 
-- NVIDIA_API_KEY: the existing hosted NVIDIA account key.
+- NVIDIA_API_KEY: the existing hosted NVIDIA account key. When set, current
+  NVIDIA NIM chat Nemotron IDs and `meta/muse-glimmer-30b` are appended after
+  `JARVIS_LLM_FALLBACK_MODELS`. Missing key skips those slots (degraded chat,
+  not a boot failure and not governance fail-closed). NVIDIA is an inference
+  backend only; it is not a memory or authority path.
 - JARVIS_LLM_PROVIDER=nvidia (a NVIDIA_API_KEY also enables NVIDIA from legacy mock configuration).
 - JARVIS_LLM_MODEL=nvidia/nemotron-3.5-lightning-30b-a3b
 - JARVIS_LLM_BASE_URL=https://integrate.api.nvidia.com/v1
@@ -25,6 +29,12 @@ are held in memory and are not saved to disk.
 - JARVIS_LLM_TIMEOUT_SECONDS=45
 - JARVIS_LLM_ATTEMPT_TIMEOUT_SECONDS=15
 - JARVIS_LLM_FALLBACK_MODELS=openai/gpt-oss-20b,z-ai/glm-5.3-flash
+  Catalog append (when NVIDIA_API_KEY is set):
+  nvidia/nemotron-3.5-lightning-30b-a3b (deduped if primary),
+  nvidia/nemotron-3-nano-omni-30b-a3b-reasoning,
+  nvidia/nemotron-3-super-120b-a12b,
+  nvidia/nemotron-3-ultra-550b-a55b,
+  meta/muse-glimmer-30b
 - JARVIS_SPEECH_VOICE=Magpie-Multilingual.EN-US.Aria
 - JARVIS_SERVICE_TOKEN: operator break-glass token. Required in production.
   In operator mode it protects chat, speech, sessions and diagnostics. In
@@ -33,8 +43,9 @@ are held in memory and are not saved to disk.
 - JARVIS_MEMORY_DB_PATH=/data/jarvis.sqlite3
 
 Render deploys main. Existing persistent disk and secrets are retained.
-NVIDIA text model IDs can retire: the former Nano and Super IDs must not be
-assumed available. The current model was tested from the Render service.
+NVIDIA text model IDs can retire: former Nano/Mini/Llama-3.1 Nemotron hosted IDs
+must not be assumed available. Catalog fallbacks use IDs listed on NVIDIA NIM
+at change time (`nemotron-3-nano-omni`, Super, Ultra, Lightning, Muse Glimmer).
 Unknown provider costs are labeled not reported, never represented as a confirmed free request.
 
 This is a turn-based speech pipeline (NVIDIA ASR → governed text → NVIDIA TTS).
@@ -62,15 +73,17 @@ break-glass.
 - GET /sessions/{session_id}/audit/verify: audit verification.
 
 Inference slots expose accepted, refused, unavailable or unknown outcomes.
-The deployed defaults use three NVIDIA-hosted models. Each attempt takes at most
-15 seconds, with a 45-second total budget and a 60-second model cooldown.
-Bad credentials (401/403) disable attempts using that same credential reference;
-an independently configured provider may still answer. A content/safety refusal
-is terminal: no alternate model is tried to evade it.
+The deployed defaults try the primary NVIDIA model, then
+`JARVIS_LLM_FALLBACK_MODELS`, then Nemotron + Muse Glimmer catalog IDs when
+`NVIDIA_API_KEY` is set. Each attempt takes at most 15 seconds, with a
+45-second total budget and a 60-second model cooldown. HTTP 4xx other than 429
+is not retried on the same model; 401/403 disable the same credential
+reference. An independently configured provider may still answer. A
+content/safety refusal is terminal: no alternate model is tried to evade it.
 
 If all inference slots fail, /chat returns a persisted minimal status reply
 (HTTP 200 delivery, NOT confirmed inference): safe_mode=true, read_only=true,
-decision=fail_closed, inference_status=unavailable/unknown/refused, provider=internal,
+decision=degraded, inference_status=unavailable/unknown/refused, provider=internal,
 model=minimal-chat. This is a deterministic status responder, not an offline LLM.
 It does not invent answers, extract memories, sync externally, or enable voice.
 Storage, authentication or internal programming failures can still return errors.
@@ -92,7 +105,7 @@ the browser never silently replays a submitted chat.
 ## Provider-independent slots
 
 Set JARVIS_LLM_SLOTS to a JSON array to override the legacy provider/model settings.
-Up to three OpenAI-compatible chat-completion endpoints are supported, including
+Up to eight OpenAI-compatible chat-completion endpoints are supported, including
 llama.cpp on a loopback endpoint. Each slot supports provider, model, base_url,
 api_key_env (a server environment-variable NAME), attempts (1–2), timeout_seconds
 (1–30) and cooldown_seconds (1–3600). The global time budget still applies.

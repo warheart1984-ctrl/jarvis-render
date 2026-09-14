@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
+MAX_INFERENCE_SLOTS = 8
+
 
 class ProviderSlot(BaseModel):
     """Server-controlled endpoint with a secret reference, never an embedded key."""
@@ -65,7 +67,11 @@ class JarvisSettings(BaseSettings):
     llm_temperature: float = 0.7
     llm_timeout_seconds: float = Field(default=45.0, ge=1, le=50)
     llm_attempt_timeout_seconds: float = Field(default=15.0, ge=1, le=30)
-    llm_slots: list[ProviderSlot] = Field(default_factory=list, max_length=3)
+    # Legacy JARVIS_LLM_SLOTS override. Catalog Nemotron + Muse Glimmer fallbacks need more than 3.
+    llm_slots: list[ProviderSlot] = Field(default_factory=list, max_length=MAX_INFERENCE_SLOTS)
+    # Operator-ordered fallbacks after JARVIS_LLM_MODEL. NVIDIA Nemotron + Muse Glimmer
+    # catalog IDs are appended in code when NVIDIA_API_KEY is set; they are not a
+    # separate authority path.
     llm_fallback_models: str = "openai/gpt-oss-20b,z-ai/glm-5.3-flash"
     llm_max_tokens: int = Field(default=768, ge=64, le=4096)
     speech_asr_url: str = (
