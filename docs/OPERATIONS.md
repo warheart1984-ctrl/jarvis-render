@@ -48,8 +48,10 @@ Production supersession is blocked until EMR gates are implemented.
 
 ## API contracts
 
-`POST /chat` handles conversational turns. `GET /sessions/{id}/trace` exposes
-decision traces, and `/sessions/{id}/audit/verify` verifies the audit chain.
+`POST /chat` handles conversational turns and returns a public `deliberation`
+envelope (v0 / DOS-lite stages, claim tags, unsupported-claim warnings).
+`GET /sessions/{id}/trace` exposes decision traces, including the same
+DOS-lite envelope, and `/sessions/{id}/audit/verify` verifies the audit chain.
 Consented local memory extraction creates drafts. Governed external writes are
 disabled by default and always blocked in production pending EMR gates.
 See [memory provenance](MEMORY_PROVENANCE.md) for the authenticated inspection

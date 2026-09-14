@@ -1,4 +1,4 @@
-"""Jarvis engine — orchestrates conversation, v0 heuristic state, memory, and replies."""
+"""Jarvis engine — orchestrates conversation, v0 heuristic state, DOS-lite deliberation, memory, and replies."""
 
 from __future__ import annotations
 
@@ -10,8 +10,16 @@ from typing import Any
 from uuid import uuid4
 
 from jarvis.auth import AccessStore, Principal
-
 from jarvis.brain.context import build_chat_context
+from jarvis.brain.deliberation import (
+    ChallengeAction,
+    DeliberationBlocked,
+    DeliberationRunner,
+    challenge_reply,
+    evidence_from_citation,
+    map_challenge_decision,
+    message_looks_hypothetical,
+)
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
 from jarvis.brain.memory import (
@@ -43,8 +51,9 @@ logger = logging.getLogger(__name__)
 class JarvisEngine:
     """The main Jarvis orchestrator.
 
-    Manages sessions, runs the v0 emotion classifier and spiral-state tracker,
-    and optionally syncs state with the Spiral Intelligence backend.
+    Manages sessions, runs the v0 emotion classifier, spiral-state tracker,
+    and DOS-lite deliberation pipeline, and optionally syncs state with the
+    Spiral Intelligence backend.
     """
 
     def __init__(self, spiral_client: SpiralClient | None = None, store: JarvisStore | None = None) -> None:
@@ -146,8 +155,9 @@ class JarvisEngine:
         Steps:
         1. LISTEN  — receive the message and resolve the session
         2. ORIENT  — v0 keyword emotion classifier + phase label
-        3. REASON  — advance the bounded five-variable spiral-state tracker
-        4. RESPOND — generate a contextual reply
+        3. REASON  — advance the bounded five-variable spiral-state tracker,
+                     then run the v0 DOS-lite deliberation stages through Challenge
+        4. RESPOND — generate a contextual reply; Evaluate + Commit tag claims
         5. REFLECT — extract memories and update preferences
         6. EVOLVE  — persist the turn; optional backend sync (disabled pending EMR)
         """
@@ -157,7 +167,8 @@ class JarvisEngine:
         recall_key = settings.service_token
         if principal is not None:
             if (
-                not settings.oauth_enabled() or not settings.recall_signing_key
+                not settings.oauth_enabled()
+                or not settings.recall_signing_key
                 or request.user_id != principal.user_id
                 or not self.access.owns(principal, request.session_id or "")
                 or self.store.scope != (principal.tenant_id, principal.subject)
@@ -212,8 +223,46 @@ class JarvisEngine:
                 reasons.append("stress above safe execution threshold")
             decision = "fail_closed" if reasons else "answer"
 
+            owned_memories = [
+                m for m in state.long_term_memory if m.user_id == state.user_id and m.session_id == state.session_id
+            ]
+            runner = DeliberationRunner()
+            runner.observe(
+                message=request.message,
+                session_id=state.session_id,
+                memories=[(m.memory_id, f"memory citation {m.memory_id}") for m in owned_memories[:8]],
+                history=[
+                    (str(item.get("turn_id") or index), f"{item.get('role', 'message')} history citation")
+                    for index, item in enumerate(state.conversation_history[-8:])
+                    if item.get("role") in {"user", "assistant"}
+                ],
+                external_context=request.context or None,
+                emotion_rationale=emotion.rationale,
+            )
+            runner.interpret(
+                emotion_label=emotion.inferred_emotion,
+                intent=state.intent.value,
+                phase=state.phase.value,
+                confidence=confidence,
+            )
+            runner.infer()
+            if message_looks_hypothetical(request.message):
+                runner.simulate()
+            runner.challenge(uncertainty=uncertainty, stress=emotion.stress)
+            if runner.challenge_action is not None:
+                decision = map_challenge_decision(runner.challenge_action, decision)
+            for reason in runner.challenge_reasons:
+                if reason not in reasons:
+                    reasons.append(reason)
+            if decision == "fail_closed" and not reasons:
+                reasons.append("deliberation challenge fail-closed")
+
             # --- 4. RESPOND ---
             local_reply, reasoning_trace = generate_response(state, request.message)
+            forced_reply = challenge_reply(runner.challenge_action or ChallengeAction.CONTINUE)
+            if forced_reply and decision != "fail_closed":
+                local_reply = forced_reply
+                reasoning_trace.append(f"dos-lite challenge forced {runner.challenge_action.value}")
             turn_id = uuid4().hex
             correlation_id = uuid4().hex
 
@@ -224,9 +273,7 @@ class JarvisEngine:
             previous = RecallResult()
             if request.recall_previous:
                 previous = (
-                    self.recall.previous(
-                        recall_owner, recall_key, session_id=state.session_id, before=state.created_at
-                    )
+                    self.recall.previous(recall_owner, recall_key, session_id=state.session_id, before=state.created_at)
                     if recall_owner
                     else RecallResult({"status": "not_authorized"})
                 )
@@ -253,7 +300,8 @@ class JarvisEngine:
                 )
             # Language-only clarification is allowed even when consequential actions
             # are blocked. No tools, external memory writes or execution are offered.
-            if emotion.stress <= 0.8:
+            skip_hosted = runner.challenge_action in {ChallengeAction.CLARIFY, ChallengeAction.ABSTAIN}
+            if emotion.stress <= 0.8 and decision != "abstain" and not skip_hosted:
                 try:
                     llm_result = await generate_llm_reply(
                         messages,
@@ -274,10 +322,31 @@ class JarvisEngine:
                     "I can clarify the goal or continue with read-only planning."
                 )
                 reasoning_trace.append("fail-closed safety lane applied")
+            elif decision == "abstain" and not llm_result:
+                reply = forced_reply or (
+                    "I'm abstaining from a committed answer. The available evidence is too thin "
+                    "or the signals are too uncertain for a DOS-lite v0 commit."
+                )
+                reasoning_trace.append("dos-lite challenge abstain applied")
 
             # --- 5. REFLECT ---
-            receipt = context_receipt(runtime_context.pop("prepared_citations"), llm_result)
+            prepared_citations = runtime_context.pop("prepared_citations")
+            for item in prepared_citations:
+                cited = evidence_from_citation(item)
+                if cited:
+                    runner.add_evidence(cited)
+            receipt = context_receipt(prepared_citations, llm_result)
             runtime_context["context_receipt"] = receipt
+            try:
+                runner.evaluate(reply)
+                deliberation = runner.commit()
+            except DeliberationBlocked as exc:
+                reasons.append(str(exc))
+                decision = "fail_closed"
+                deliberation = runner.snapshot(status="blocked", blocked_reason=str(exc))
+            public_deliberation = deliberation.to_public_dict()
+            for stage in deliberation.stages:
+                reasoning_trace.append(f"dos-lite {stage.name.value}: {stage.summary}")
             state.conversation_history = add_to_conversation_history(state, request.message, reply)
             for message in state.conversation_history[-2:]:
                 message["turn_id"] = turn_id
@@ -307,6 +376,7 @@ class JarvisEngine:
                     {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
                     {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
                     {"type": "runtime_context", **runtime_context},
+                    {"type": "deliberation", "version": "v0-dos-lite", "trace": public_deliberation},
                 ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
@@ -348,6 +418,7 @@ class JarvisEngine:
                         "correlation_id": correlation_id,
                         "runtime_context": runtime_context,
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
+                        "deliberation": public_deliberation,
                     },
                 },
                 {
@@ -413,7 +484,7 @@ class JarvisEngine:
                 model=turn.model,
                 cost_usd=turn.cost_usd,
                 latency_ms=turn.latency_ms,
-                read_only=decision == "fail_closed",
+                read_only=decision in {"fail_closed", "abstain"},
                 cost_reported=llm_result.cost_reported if llm_result else True,
                 input_mode=request.input_mode,
                 provider_attempts=llm_result.attempts if llm_result else [],
@@ -424,6 +495,7 @@ class JarvisEngine:
                 correlation_id=correlation_id,
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
+                deliberation=public_deliberation,
             )
 
     # ------------------------------------------------------------------

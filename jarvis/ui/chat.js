@@ -1,6 +1,6 @@
 import { createRecorder, disposePlayback } from "./audio.js";
 import { recallStatus } from "./recall.js";
-import { receiptView, renderInspection } from "./memory.js";
+import { deliberationView, receiptView, renderInspection } from "./memory.js";
 
 const $ = id => document.getElementById(id);
 let session = "", connected = false, busy = false, recovered = false;
@@ -124,13 +124,17 @@ function message(role, text, response = null, turnId = "") {
     replay.textContent = "Play reply"; replay.disabled = !caps.speech_configured || response.safe_mode;
     replay.onclick = () => speak(response.turn_id); article.append(replay);
   }
-  if (role !== "user") article.append(receiptView(response?.context_receipt, response?.turn_id || turnId));
+  if (role !== "user") {
+    article.append(receiptView(response?.context_receipt, response?.turn_id || turnId));
+    if (response?.deliberation) article.append(deliberationView(response.deliberation));
+  }
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }
 function decision(d) {
   $("decision").textContent = d.read_only
     ? "Read-only discussion. Consequential actions are paused: " + (d.fail_closed_reason || "policy restriction")
-    : "Response completed under Jarvis policy.";
+    : "Response completed under Jarvis policy"
+      + (d.deliberation?.committed ? " after a v0 DOS-lite deliberation commit." : ".");
   $("confidence").textContent = Number(d.confidence).toFixed(2);
   $("uncertainty").textContent = Number(d.uncertainty).toFixed(2);
   $("provider").textContent = d.provider + " / " + d.model;

@@ -4,10 +4,11 @@ A conversational FastAPI layer that talks to hosted LLMs and optionally syncs
 with a [Spiral Intelligence](https://github.com/jhalstead1983-max/NVIDIA) backend.
 
 Each turn runs a local **v0 / heuristic** state loop: a rule-based emotion
-classifier and a bounded five-variable spiral-state tracker. Both are real,
-tested modules that feed session state, fail-closed gates, and the local
-fallback responder. They are **not** a trained emotion model, LLM judgment, or
-computational spiral geometry.
+classifier, a bounded five-variable spiral-state tracker, and a **DOS-lite**
+deliberation pipeline. These are real, tested modules that feed session state,
+fail-closed gates, claim tags, and the local fallback responder. They are
+**not** a trained emotion model, LLM judgment, computational spiral geometry,
+or a full constitutional OS / DOS Kernel.
 
 New memories stay draft; production governed writes remain disabled pending
 EMR gates. The same honesty applies here: these engines are useful application
@@ -51,6 +52,22 @@ placeholder. Same inputs always produce the same transition.
 keywords, turn count, and confidence. It is a pipeline label, not a separate
 reasoning engine.
 
+### DOS-lite deliberation (v0 / heuristic)
+
+`DeliberationRunner` stages Observe → Interpret → Infer → Challenge (or
+Simulate) → Evaluate → Commit. It is a rule list that raises the honesty of a
+turn, not Project Finish's full DOS Kernel.
+
+The useful part is the **Infer → Challenge/Simulate → Commit barrier** plus
+CRS claim types, enforced in code rather than in the system prompt. Hard
+rules: no Commit without an evidence reference (memory, history, tool/external
+suggestion, or explicit `none — hypothesized`); Infer cannot reach Commit
+without Challenge, Simulate, or a recorded waiver; external / tool / RAG /
+other-agent text is evidence, never authority; replies carry CRS-style
+Observed / Specified / Hypothesized tags plus unsupported-claim warnings.
+Compare, Reflect, CER replay, and OTEM-governed continuity writes are **not**
+this release. See [DOS-lite deliberation](docs/DELIBERATION.md).
+
 ## Architecture
 
 ```
@@ -59,6 +76,7 @@ User  ──▶  Jarvis API (FastAPI :8100)
               ├─ Brain Engine
               │   ├─ Emotion classifier (v0 keyword heuristic + optional BiofeedbackState)
               │   ├─ Spiral-state tracker (v0 five-variable bounded state machine)
+              │   ├─ DOS-lite deliberation (v0 Observe→…→Commit heuristic; not a DOS Kernel)
               │   ├─ Responder          (rule-based local fallback; hosted LLM when configured)
               │   └─ Memory Manager     (conversation history + consented draft knowledge)
               │
@@ -76,8 +94,10 @@ memory, and audit code.
 
 1. **LISTEN** — receive the message, resolve the session
 2. **ORIENT** — run the keyword emotion classifier, pick a phase label
-3. **REASON** — advance the five-variable spiral-state tracker
-4. **RESPOND** — generate a reply (hosted LLM when configured, else the local responder)
+3. **REASON** — advance the five-variable spiral-state tracker, then run
+   DOS-lite Observe → Interpret → Infer → Challenge (or Simulate)
+4. **RESPOND** — generate a reply (hosted LLM when configured, else the local
+   responder); Evaluate + Commit attach claim tags
 5. **REFLECT** — extract memories when consented, update preferences
 6. **EVOLVE** — persist the turn; optional Spiral backend sync stays disabled
    in production pending EMR gates
@@ -145,9 +165,12 @@ Copy `.env.example` to `.env` and configure:
 poetry run pytest -v
 ```
 
-`tests/test_emotion.py` and `tests/test_spiral_evolution.py` cover the v0
-heuristics: keyword labels, optional biofeedback stress, bounded increments,
-intent-mode gates, and the deterministic energy phase signal.
+`tests/test_emotion.py`, `tests/test_spiral_evolution.py`, and
+`tests/test_deliberation.py` cover the v0 heuristics: keyword labels, optional
+biofeedback stress, bounded increments, intent-mode gates, the deterministic
+energy phase signal, and DOS-lite hard rules (Infer-without-Challenge blocked,
+Commit without evidence blocked, recorded waivers, external suggestions as
+evidence-only, happy-path Commit with evidence).
 
 ## Connecting to Spiral Intelligence
 

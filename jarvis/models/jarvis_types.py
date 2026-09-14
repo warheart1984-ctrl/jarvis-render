@@ -71,6 +71,25 @@ class ChatResponse(BaseModel):
     correlation_id: str = ""
     previous_session: dict[str, Any] = Field(default_factory=lambda: {"status": "disabled"})
     context_receipt: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded", "citations": []})
+    deliberation: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "version": "v0-dos-lite",
+            "label": (
+                "v0 heuristic deliberation pipeline (DOS-lite); not a full DOS Kernel, "
+                "trained judge, or private chain-of-thought engine"
+            ),
+            "status": "not_run",
+            "stages": [],
+            "evidence": [],
+            "claims": [],
+            "unsupported_claim_warnings": [],
+            "challenge_action": None,
+            "challenge_reasons": [],
+            "waivers": [],
+            "committed": False,
+            "blocked_reason": None,
+        }
+    )
 
 
 class SpiralTurn(BaseModel):

@@ -39,9 +39,10 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Jarvis — conversational FastAPI layer with a v0 keyword emotion "
-        "classifier, a bounded five-variable spiral-state tracker, adaptive "
-        "memory, and an optional Spiral Intelligence V8 client. Heuristic "
-        "state, not trained emotion inference or computational spiral geometry."
+        "classifier, a bounded five-variable spiral-state tracker, a v0 "
+        "DOS-lite deliberation pipeline, adaptive memory, and an optional "
+        "Spiral Intelligence V8 client. Heuristic state, not trained emotion "
+        "inference, computational spiral geometry, or a full DOS Kernel."
     ),
     lifespan=lifespan,
 )
