@@ -179,8 +179,14 @@ Copy `.env.example` to `.env` and configure:
 - `JARVIS_SPIRAL_API_BASE` — URL of the Spiral Intelligence backend
 - `JARVIS_LLM_PROVIDER` — `nvidia` for hosted chat, or `mock` for the local responder
 - `JARVIS_LLM_API_KEY` — API key for the LLM provider
-- `NVIDIA_API_KEY` — NVIDIA hosted API key (server-side only)
+- `NVIDIA_API_KEY` — NVIDIA hosted API key (server-side only). When set, Nemotron
+  and Muse Glimmer catalog models are appended to the inference fallback sequence.
+  They are another OpenAI-compatible backend, not a memory or authority path.
+  A missing key skips those slots and degrades chat; it does not crash boot.
 - `JARVIS_LLM_MODEL` — defaults to `nvidia/nemotron-3.5-lightning-30b-a3b`
+- `JARVIS_LLM_FALLBACK_MODELS` — operator-ordered models after the primary
+  (default `openai/gpt-oss-20b,z-ai/glm-5.3-flash`). NVIDIA catalog fallbacks are
+  appended after this list when `NVIDIA_API_KEY` is set.
 - `JARVIS_SERVICE_TOKEN` — operator token required by protected API routes
 - `JARVIS_SEARCH_PROVIDER` — empty (disabled/degraded), `fake` (deterministic test double),
   `tavily`, or `brave`. Observe-only: provider JSON snippets are evidence, never authority or memory. v0 does not GET hit URLs.
