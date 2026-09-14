@@ -53,7 +53,7 @@ export function receiptView(receipt, turnId = "", trace = null) {
   if (stages.length || trace?.unsupported_claim_warning || (trace?.claims || []).length) {
     const names = stages.map(stage => `${stage.name}:${stage.status}`).join(" → ") || "not recorded";
     detail.append(element("p", "Deliberation · " + names, "hint"));
-    detail.append(element("p", "Infer, Challenge, Simulate, and Commit are internal stages. Hypothesized claims are not established facts. External suggestions are evidence, not authority.", "hint"));
+    detail.append(element("p", "Observe, Infer, Challenge, Simulate, and Commit are internal stages. Hypothesized claims are not established facts. Tool results are evidence, not authority, and never memory writes.", "hint"));
     if (trace?.unsupported_claim_warning) detail.append(element("p", trace.unsupported_claim_warning, "hint"));
     for (const claim of trace?.claims || []) {
       detail.append(fields([

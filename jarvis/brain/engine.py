@@ -10,9 +10,8 @@ from typing import Any
 from uuid import uuid4
 
 from jarvis.auth import AccessStore, Principal
-
 from jarvis.brain.context import build_chat_context
-from jarvis.brain.deliberation import admit_external, deliberate, withheld_commit_reply
+from jarvis.brain.deliberation import admit_external, admit_tool, deliberate, withheld_commit_reply
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
 from jarvis.brain.memory import (
@@ -24,6 +23,7 @@ from jarvis.brain.memory import (
 from jarvis.brain.provenance import context_receipt, memory_reference
 from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
+from jarvis.brain.tools import ObserveResult, observe_turn
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.governance.adapters import policy_context_from_state
@@ -227,6 +227,17 @@ class JarvisEngine:
             local_reply, reasoning_trace = generate_response(state, request.message)
             turn_id = uuid4().hex
             correlation_id = uuid4().hex
+            observe = ObserveResult(required=False, grounding_required=False, records=[], thin=False)
+            if settings.observe_tools_enabled and decision != "fail_closed":
+                observe = await observe_turn(
+                    request.message,
+                    session_id=state.session_id,
+                    intent=state.intent.value,
+                    ledger=self.continuity,
+                )
+                if observe.thin:
+                    reasons.append("observe evidence thin; refusing an ungrounded commit")
+                    decision = "fail_closed"
 
             def audit_attempt(entry: dict[str, Any]) -> None:
                 self.audit.append(uuid4().hex, state.session_id, "inference_attempt", entry, turn_id=turn_id)
@@ -249,7 +260,9 @@ class JarvisEngine:
                 continuity_configured=self.continuity is not None,
                 speech_configured=bool(settings.nvidia_api_key),
                 previous=previous,
+                observe_citations=observe.observed_citations(),
             )
+            runtime_context["observe"] = observe.public_dict()
             if request.recall_previous:
                 self.audit.append(
                     uuid4().hex,
@@ -262,9 +275,9 @@ class JarvisEngine:
                     },
                     turn_id=turn_id,
                 )
-            # Language-only clarification is allowed even when consequential actions
-            # are blocked. No tools, external memory writes or execution are offered.
-            if emotion.stress <= 0.8:
+            # Observe-only tools already ran. Language-only clarification is allowed
+            # even when consequential actions are blocked. No memory writes or execution.
+            if emotion.stress <= 0.8 and not observe.thin:
                 try:
                     llm_result = await generate_llm_reply(
                         messages,
@@ -281,19 +294,28 @@ class JarvisEngine:
                 decision = "fail_closed"
             if decision == "fail_closed" and not llm_result:
                 reply = (
-                    "I’m pausing consequential action because the available signals are uncertain. "
-                    "I can clarify the goal or continue with read-only planning."
+                    withheld_commit_reply()
+                    if observe.thin
+                    else (
+                        "I’m pausing consequential action because the available signals are uncertain. "
+                        "I can clarify the goal or continue with read-only planning."
+                    )
                 )
-                reasoning_trace.append("fail-closed safety lane applied")
+                reasoning_trace.append(
+                    "commit withheld: observe evidence thin" if observe.thin else "fail-closed safety lane applied"
+                )
 
             # --- 5. REFLECT ---
             receipt = context_receipt(runtime_context.pop("prepared_citations"), llm_result)
             runtime_context["context_receipt"] = receipt
+            external = [admit_tool(record) for record in observe.records]
             deliberation = deliberate(
                 reply,
                 user_message=request.message,
                 fail_closed=decision == "fail_closed",
                 citations=receipt.get("citations") or [],
+                external=external,
+                tool_records=observe.records,
             )
             if not deliberation["committed"]:
                 reply = withheld_commit_reply()
@@ -304,6 +326,8 @@ class JarvisEngine:
                     user_message=request.message,
                     fail_closed=True,
                     citations=receipt.get("citations") or [],
+                    external=external,
+                    tool_records=observe.records,
                 )
             reasoning_trace.extend(
                 f"deliberation {stage['name']}: {stage['status']}" for stage in deliberation["stages"]
@@ -341,6 +365,7 @@ class JarvisEngine:
                     {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
                     {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
                     {"type": "runtime_context", **runtime_context},
+                    {"type": "observe", **observe.public_dict()},
                     {"type": "deliberation", **deliberation},
                 ],
                 content=reply,

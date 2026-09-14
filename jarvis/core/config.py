@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
@@ -96,6 +96,16 @@ class JarvisSettings(BaseSettings):
     memory_db_path: str = "jarvis.sqlite3"
     continuity_ledger_url: str = ""
     continuity_ledger_token: str = ""
+    # Observe-only tool belt (ledger recall, nx_search, web search). Never auto-writes memory.
+    observe_tools_enabled: bool = True
+    nx_search_bin: str = ""
+    nx_search_node: str = "node"
+    web_search_enabled: bool = False
+    web_search_provider: Literal["none", "ddg", "brave"] = "none"
+    brave_search_api_key: str = ""
+    observe_cache_ttl_seconds: int = Field(default=90, ge=5, le=600)
+    observe_tool_timeout_seconds: float = Field(default=8.0, ge=1, le=30)
+    observe_nx_limit: int = Field(default=8, ge=1, le=25)
     service_token: str = ""
     # Single-operator recall; never derive this principal from the request's user_id.
     recall_owner_user_id: str = ""

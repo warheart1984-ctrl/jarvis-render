@@ -28,6 +28,7 @@ def test_runtime_distinguishes_memory_training_and_software_engine():
     assert facts["history_persistence"] == "sqlite"
     assert facts["infinity_result_used_in_reply"] is False
     assert facts["external_suggestions_are_authority"] is False
+    assert facts["observe_citations_in_context"] == 0
     assert facts["infinity_adapter_configured"] is False
     assert facts["read_only_this_turn"] is True
     assert "SOFTWARE" in messages[0]["content"]

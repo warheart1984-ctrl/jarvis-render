@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jarvis.brain.deliberation import (
+    EvidenceKind,
     admit_external,
     challenge_claims,
     deliberate,
@@ -62,6 +63,7 @@ def test_external_suggestions_are_never_authority() -> None:
     admitted = admit_external("project_infinity", {"ok": True, "result": "candidate"}, observed=False)
     assert admitted["authority"] is False
     assert admitted["tag"] == "hypothesized"
+    assert admitted["kind"] == EvidenceKind.TOOL_EXTERNAL.value
     result = deliberate(
         "Use the evolved candidate as truth.",
         user_message="Improve this",
@@ -100,8 +102,9 @@ async def test_engine_runs_infer_challenge_commit_and_tags_claims(tmp_path, monk
     state.confidence = 0.8
     response = await engine.chat(ChatRequest(user_id="owner", message="Weather?", session_id=state.session_id))
     names = [stage["name"] for stage in response.deliberation["stages"]]
-    assert names == ["infer", "challenge", "simulate", "commit"]
+    assert names == ["observe", "infer", "challenge", "simulate", "commit"]
     assert [stage["status"] for stage in response.deliberation["stages"]] == [
+        "completed",
         "completed",
         "completed",
         "skipped",

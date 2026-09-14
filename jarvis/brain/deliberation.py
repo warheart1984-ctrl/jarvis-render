@@ -1,4 +1,4 @@
-"""DOS-lite turn deliberation: Infer → Challenge → Simulate → Commit.
+"""DOS-lite turn deliberation: Observe → Infer → Challenge → Simulate → Commit.
 
 Internal stages only. Do not emit hidden chain-of-thought markup.
 External tools and Infinity results are evidence, never authority.
@@ -7,9 +7,17 @@ External tools and Infinity results are evidence, never authority.
 from __future__ import annotations
 
 import re
+from enum import Enum
 from typing import Any, Literal
 
 ClaimTag = Literal["observed", "specified", "hypothesized"]
+
+
+class EvidenceKind(str, Enum):
+    MEMORY = "memory"
+    HISTORY = "history"
+    TOOL_EXTERNAL = "tool_external"
+    HYPOTHESIZED_NONE = "hypothesized_none"
 
 HEDGE = re.compile(
     r"\b(maybe|might|perhaps|possibly|i don't know|i do not know|not sure|"
@@ -46,7 +54,24 @@ def admit_external(source: str, payload: Any, *, observed: bool = False) -> dict
     """Admit a tool, RAG, or Infinity result as evidence. Never as authority."""
     text = payload if isinstance(payload, str) else str(payload)[:500]
     tag: ClaimTag = "observed" if observed and source else "hypothesized"
-    return claim(text or "(empty external result)", tag, source=source, authority=False)
+    item = claim(text or "(empty external result)", tag, source=source, authority=False)
+    item["kind"] = EvidenceKind.TOOL_EXTERNAL.value
+    return item
+
+
+def admit_tool(record: dict[str, Any] | Any) -> dict[str, Any]:
+    """Admit a ToolCallRecord as TOOL_EXTERNAL evidence. Never as authority, never as a write."""
+    payload = record.public_dict() if hasattr(record, "public_dict") else dict(record)
+    citations = payload.get("citations") or []
+    locators = [str(item.get("locator") or "") for item in citations if isinstance(item, dict)]
+    summary = ", ".join(locators[:4]) or str(payload.get("error") or payload.get("status") or "no citations")
+    observed = bool(payload.get("observed") and citations)
+    item = admit_external(str(payload.get("tool") or "tool"), summary, observed=observed)
+    item["args_hash"] = str(payload.get("args_hash") or "")
+    item["payload_hash"] = str(payload.get("payload_hash") or "")
+    item["status"] = str(payload.get("status") or "")
+    item["writes"] = False
+    return item
 
 
 def is_unknown_reply(reply: str) -> bool:
@@ -117,37 +142,47 @@ def deliberate(
     fail_closed: bool,
     citations: list[dict[str, Any]] | None = None,
     external: list[dict[str, Any]] | None = None,
+    tool_records: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Run Infer → Challenge → Simulate(no-op) → Commit. Commit needs Challenge plus evidence or an unknown/fail-closed reply."""
+    """Run Observe → Infer → Challenge → Simulate(no-op) → Commit.
+
+    Commit needs Challenge plus evidence or an unknown/fail-closed reply.
+    """
+    records = []
+    for item in tool_records or []:
+        records.append(item.public_dict() if hasattr(item, "public_dict") else dict(item))
+    admitted = list(external or [])
+    if not admitted:
+        admitted = [admit_tool(item) for item in records]
     stages = [
+        {"name": "observe", "status": "completed" if records else "skipped"},
         {"name": "infer", "status": "started"},
         {"name": "challenge", "status": "blocked"},
         {"name": "simulate", "status": "skipped"},
         {"name": "commit", "status": "blocked"},
     ]
-    claims = infer_claims(reply, user_message=user_message, citations=citations, external=external)
-    stages[0]["status"] = "completed"
-    warning = challenge_claims(claims)
+    claims = infer_claims(reply, user_message=user_message, citations=citations, external=admitted)
     stages[1]["status"] = "completed"
-    stages[2]["status"] = "skipped"
+    warning = challenge_claims(claims)
+    stages[2]["status"] = "completed"
+    stages[3]["status"] = "skipped"
     unknown = is_unknown_reply(reply)
-    challenge_done = stages[1]["status"] == "completed"
+    challenge_done = stages[2]["status"] == "completed"
     has_evidence = any(item.get("tag") in {"observed", "specified"} for item in claims)
-    may_commit = challenge_done and (fail_closed or unknown or has_evidence)
-    if not may_commit:
-        return {
-            "stages": stages,
-            "claims": claims,
-            "committed": False,
-            "unsupported_claim_warning": warning,
-        }
-    stages[3]["status"] = "completed"
-    return {
+    envelope = {
         "stages": stages,
         "claims": claims,
-        "committed": True,
+        "committed": False,
         "unsupported_claim_warning": warning,
+        "tool_records": records,
+        "observe_required": bool(records),
     }
+    may_commit = challenge_done and (fail_closed or unknown or has_evidence)
+    if not may_commit:
+        return envelope
+    stages[4]["status"] = "completed"
+    envelope["committed"] = True
+    return envelope
 
 
 def withheld_commit_reply() -> str:
