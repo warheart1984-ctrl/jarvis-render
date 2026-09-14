@@ -8,6 +8,46 @@ This is **not** a full constitutional OS, a trained judge, or a private
 chain-of-thought engine. The honesty bar matches the [v0 emotion classifier
 and spiral-state tracker](../README.md#what-the-local-engines-actually-do).
 
+## The topology that matters
+
+The useful part is not the stage count. It is a **barrier between forming an
+inference and committing to it**, plus an epistemic type on each claim.
+Those are runtime checks in `DeliberationRunner.commit` and `EvidenceRef`,
+not prompt instructions.
+
+Intended spine (later rings are named here so they are not mistaken for this
+release):
+
+```
+Deliberation → epistemic discipline → governed evidence → governed memory → continuity
+```
+
+v0 implements the first ring only:
+
+1. **Infer cannot reach Commit** without Challenge, Simulate, or a recorded waiver.
+2. **Claims carry CRS status and evidence linkage** (Observed / Specified /
+   Hypothesized, plus unsupported warnings). A claim is an inspectable
+   `{text, tag, evidence_ids}` object, not free-floating prose.
+3. **External outputs contribute evidence and cannot establish authority.**
+   Tool / RAG / other-agent / `request.context` text is admitted with
+   `authority=false`. The runner ignores a requested authority flag.
+
+That attacks three failure modes independently: premature conclusions,
+hallucinated certainty, and tool/agent authority. A larger context window
+does not substitute for these gates.
+
+## What this release does not do
+
+The fuller loop people remember from older work — Compare, Reflect, CER
+lineage/replay, OTEM approve→preview→verify→apply, conflict membranes, and
+using deliberation records as evaluation/training material — is **not**
+implemented here. Continuity Ledger writes stay gated. Local drafts and
+hash-chained audit events are adjacent plumbing, not persistent epistemology
+and not a claim that Jarvis learns better deliberation policy between turns.
+
+If those later rings land, they should attach to this same spine rather than
+inventing a parallel core.
+
 ## What it actually does
 
 `DeliberationRunner` records public stage labels and secret-stripped evidence
