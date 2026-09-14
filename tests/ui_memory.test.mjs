@@ -38,3 +38,17 @@ test("stored content and artifact references are rendered as text only", () => {
   renderInspection(root, {status: "unverified"});
   assert.match(allText(root), /withheld/); assert.doesNotMatch(allText(root), /<img|memory-1/);
 });
+test("inspection shows deliberation stages and hypothesized claims as unverified", () => {
+  const view = receiptView({status: "not_recorded"}, "turn-2", {
+    unsupported_claim_warning: "1 hypothesized claim(s) lack a cited source.",
+    deliberation: {committed: true, stages: [
+      {name: "infer", status: "completed"}, {name: "challenge", status: "completed"},
+      {name: "simulate", status: "skipped"}, {name: "commit", status: "completed"}]},
+    claims: [{tag: "hypothesized", source: "model", authority: false, text: "Paris is the capital of Mars."}]
+  });
+  const text = allText(view);
+  assert.match(text, /infer:completed → challenge:completed → simulate:skipped → commit:completed/);
+  assert.match(text, /evidence, not authority/);
+  assert.match(text, /hypothesized claim/);
+  assert.match(text, /Paris is the capital of Mars/);
+});

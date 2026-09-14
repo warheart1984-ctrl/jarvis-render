@@ -124,7 +124,7 @@ function message(role, text, response = null, turnId = "") {
     replay.textContent = "Play reply"; replay.disabled = !caps.speech_configured || response.safe_mode;
     replay.onclick = () => speak(response.turn_id); article.append(replay);
   }
-  if (role !== "user") article.append(receiptView(response?.context_receipt, response?.turn_id || turnId));
+  if (role !== "user") article.append(receiptView(response?.context_receipt, response?.turn_id || turnId, response));
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }
 function decision(d) {
@@ -152,10 +152,10 @@ async function governance() {
   if (generation !== governanceGeneration || id !== encodeURIComponent(session)) return;
   const [s, a, t, v, inspection] = results;
   renderInspection($("memory-inspection"), inspection);
-  const receipts = new Map(inspection.turns.map(t => [t.turn_id, t.context_receipt]));
+  const turnsById = new Map((inspection.turns || []).map(t => [t.turn_id, t]));
   for (const node of $("messages").querySelectorAll(".context-receipt")) {
-    node.replaceWith(receiptView(inspection.status === "available"
-      ? receipts.get(node.dataset.turnId) : {status: "unavailable"}, node.dataset.turnId));
+    const turn = inspection.status === "available" ? turnsById.get(node.dataset.turnId) : null;
+    node.replaceWith(receiptView(turn?.context_receipt || {status: "unavailable"}, node.dataset.turnId, turn));
   }
   $("state").textContent = JSON.stringify(s, null, 2); $("trace").textContent = JSON.stringify(t, null, 2);
   $("audit").textContent = JSON.stringify(a, null, 2);

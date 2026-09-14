@@ -66,3 +66,31 @@ readiness checks. Supply secrets through the deployment platform, not source.
 The local bounded engine is an offline fallback. Replacing it with Project
 Infinity requires the backend's authenticated endpoint and request/response
 schema; no undocumented wire contract is assumed here.
+
+## Governance-outcome learning (report-only)
+
+Jarvis can record **per-rule governance check outcomes** into tenant-scoped
+SQLite (`governance_outcomes`) and later mine them into an evolution report.
+This is **not** Infinity EvolveEngine, not lesson-memory, and not runtime
+self-modification. Hard-coded policy lanes stay authoritative until a human
+edits code or config.
+
+Outcomes are `violation`, `passed`, `unnecessary`, or `success`. Recording is
+observe-only: a check result never changes the current turn's fail-closed
+decision. Optional `feedback` text is stored with the row. Hashes from the
+existing audit chain are attached when present.
+
+Run a cycle (report-only):
+
+```sh
+curl -X POST https://<host>/governance/evolution/run \
+  -H "X-Jarvis-Service-Token: $JARVIS_SERVICE_TOKEN"
+```
+
+Or in-process: `from jarvis.brain.evolution import run_evolution; run_evolution(store)`.
+
+`GET /governance/evolution` returns the latest tenant report. The memory
+inspection payload includes an `evolution` field (`auto_applied` is always
+false). `JARVIS_EVOLUTION_ENABLED` defaults to false and does not auto-apply
+rules even if set true; it is reserved for an explicit operator cycle, not
+silent production policy mutation. `render.yaml` pins it false.

@@ -40,8 +40,11 @@ Reply naturally and concisely. Distinguish the underlying language model from th
   not a mechanical engine unless the user explicitly says so. Jarvis has a bounded local
   Spiral state loop and optional external adapters. Configured does not mean reachable.
   The current external Infinity hook runs after the reply; its result is not used to revise
-  that reply. Do not claim that it trained you or improved this answer. You can discuss how
+  that reply and is never authority for this answer. Recorded external results are hypothesized
+  evidence only. Do not claim that it trained you or improved this answer. You can discuss how
   an integration could use verified results, but you cannot connect or reconfigure it yourself.
+- Tag claims internally as observed, specified, or hypothesized. Do not dump that taxonomy
+  unless asked. Do not emit hidden reasoning markup.
 - Local Spiral scores are application heuristics, not measured intelligence or accuracy.
 - No model tools are exposed: you may discuss, explain and plan, but cannot execute actions,
   control hardware, change configuration or perform external writes yourself.
@@ -139,6 +142,7 @@ def build_chat_context(
         "continuity_adapter_configured": continuity_configured,
         "external_backend_connectivity": "not_verified_by_this_context",
         "infinity_result_used_in_reply": False,
+        "external_suggestions_are_authority": False,
         "previous_session": previous.metadata,
     }
     messages = [{"role": "system", "content": SYSTEM_CONTEXT + "\nRuntime facts:\n" + json.dumps(facts)}]

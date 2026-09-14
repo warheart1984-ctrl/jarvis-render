@@ -253,6 +253,8 @@ async def test_unrecorded_legacy_turn_is_not_given_invented_citations(inspected)
     )
     data = inspect_session(engine, state)
     assert data["turns"][0]["context_receipt"] == {"status": "not_recorded", "citations": []}
+    assert data["turns"][0]["deliberation"]["status"] == "not_recorded"
+    assert data["turns"][0]["claims"] == []
 
 
 def test_inspection_auth_ownership_and_production_write_gate(client, monkeypatch):  # noqa: F811

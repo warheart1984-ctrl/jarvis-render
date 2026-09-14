@@ -95,6 +95,9 @@ therefore stay read-only; start a new chat to continue with eligible recall.
 The development opt-in exists only for explicitly configured integration tests.
 Existing local clear-memory behavior is unchanged; it is not complete audit erasure.
 
+Governance-outcome reports (see [operations](OPERATIONS.md#governance-outcome-learning-report-only))
+are tenant-scoped and inspectable. They never auto-apply policy.
+
 ## Validation
 
 Run the full Python suite with a fresh writable `--basetemp` and

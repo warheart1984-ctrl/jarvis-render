@@ -71,6 +71,11 @@ class ChatResponse(BaseModel):
     correlation_id: str = ""
     previous_session: dict[str, Any] = Field(default_factory=lambda: {"status": "disabled"})
     context_receipt: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded", "citations": []})
+    deliberation: dict[str, Any] = Field(
+        default_factory=lambda: {"status": "not_recorded", "stages": [], "committed": False}
+    )
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    unsupported_claim_warning: str | None = None
 
 
 class SpiralTurn(BaseModel):

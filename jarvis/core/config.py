@@ -51,6 +51,12 @@ class JarvisSettings(BaseSettings):
     spiral_private_api_base: str = "http://127.0.0.1:8787"
     infinity_api_base: str = ""
     infinity_enabled: bool = False
+    # Observe-only governance check recording. Does not change fail-closed policy.
+    governance_outcomes_enabled: bool = True
+    # Report-only policy-weight suggestions. Never auto-applies rule changes.
+    evolution_enabled: bool = False
+    evolution_min_checks: int = Field(default=5, ge=1, le=500)
+    evolution_mine_limit: int = Field(default=200, ge=10, le=2000)
 
     # Jarvis identity
     jarvis_user_id: str = "jarvis"

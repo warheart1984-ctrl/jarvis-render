@@ -18,7 +18,7 @@ export function receiptSummary(receipt) {
   return ({not_recorded: "Not recorded for this turn", no_inference: "No accepted inference",
     not_requested: "No model request", unavailable: "Verification unavailable"})[status] || "Not recorded for this turn";
 }
-export function receiptView(receipt, turnId = "") {
+export function receiptView(receipt, turnId = "", trace = null) {
   const detail = element("details", undefined, "context-receipt");
   detail.dataset.turnId = turnId;
   detail.append(element("summary", "Influenced this turn · " + receiptSummary(receipt)));
@@ -49,6 +49,21 @@ export function receiptView(receipt, turnId = "") {
     item.append(entry); list.append(item);
   }
   detail.append(list);
+  const stages = trace?.deliberation?.stages || [];
+  if (stages.length || trace?.unsupported_claim_warning || (trace?.claims || []).length) {
+    const names = stages.map(stage => `${stage.name}:${stage.status}`).join(" → ") || "not recorded";
+    detail.append(element("p", "Deliberation · " + names, "hint"));
+    detail.append(element("p", "Infer, Challenge, Simulate, and Commit are internal stages. Hypothesized claims are not established facts. External suggestions are evidence, not authority.", "hint"));
+    if (trace?.unsupported_claim_warning) detail.append(element("p", trace.unsupported_claim_warning, "hint"));
+    for (const claim of trace?.claims || []) {
+      detail.append(fields([
+        ["Claim tag", claim.tag],
+        ["Source", claim.source],
+        ["Authority", claim.authority ? "true" : "false"],
+        ["Text", claim.text],
+      ]));
+    }
+  }
   return detail;
 }
 export function renderInspection(root, data) {
@@ -85,6 +100,6 @@ export function renderInspection(root, data) {
   }
   const turns = element("section");
   turns.append(element("h3", "Turn citations"), element("p", "Latest 20 turns. Receipts describe context supplied at that time, not current source availability. Older turns without receipts are marked not recorded.", "hint"));
-  for (const turn of [...data.turns].reverse()) turns.append(receiptView(turn.context_receipt, turn.turn_id));
+  for (const turn of [...data.turns].reverse()) turns.append(receiptView(turn.context_receipt, turn.turn_id, turn));
   grid.append(memories, turns); root.append(grid);
 }

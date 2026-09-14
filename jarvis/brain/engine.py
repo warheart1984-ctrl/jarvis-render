@@ -12,6 +12,7 @@ from uuid import uuid4
 from jarvis.auth import AccessStore, Principal
 
 from jarvis.brain.context import build_chat_context
+from jarvis.brain.deliberation import admit_external, deliberate, withheld_commit_reply
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
 from jarvis.brain.memory import (
@@ -25,6 +26,10 @@ from jarvis.brain.responder import generate_response
 from jarvis.brain.spiral_evolution import determine_phase, evolve_spiral
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
+from jarvis.governance.adapters import policy_context_from_state
+from jarvis.governance.lanes import evaluate_policies
+from jarvis.governance.outcomes import outcomes_from_policy
+from jarvis.governance.schemas import ContinuityAuthStatus
 from jarvis.models.jarvis_types import (
     ChatRequest,
     ChatResponse,
@@ -38,6 +43,12 @@ from jarvis.spiral_client import SpiralClient
 from jarvis.spiral_client.infinity import ProjectInfinityClient
 
 logger = logging.getLogger(__name__)
+
+
+def _spiral_sync_result(result: Any) -> tuple[str, Any | None]:
+    if isinstance(result, tuple) and len(result) == 2:
+        return str(result[0]), result[1]
+    return str(result), None
 
 
 class JarvisEngine:
@@ -278,6 +289,29 @@ class JarvisEngine:
             # --- 5. REFLECT ---
             receipt = context_receipt(runtime_context.pop("prepared_citations"), llm_result)
             runtime_context["context_receipt"] = receipt
+            deliberation = deliberate(
+                reply,
+                user_message=request.message,
+                fail_closed=decision == "fail_closed",
+                citations=receipt.get("citations") or [],
+            )
+            if not deliberation["committed"]:
+                reply = withheld_commit_reply()
+                decision = "fail_closed"
+                reasons.append("commit withheld: no challenged evidence")
+                deliberation = deliberate(
+                    reply,
+                    user_message=request.message,
+                    fail_closed=True,
+                    citations=receipt.get("citations") or [],
+                )
+            reasoning_trace.extend(
+                f"deliberation {stage['name']}: {stage['status']}" for stage in deliberation["stages"]
+            )
+            if deliberation.get("unsupported_claim_warning"):
+                reasoning_trace.append(
+                    "unsupported-claim warning: " + str(deliberation["unsupported_claim_warning"])
+                )
             state.conversation_history = add_to_conversation_history(state, request.message, reply)
             for message in state.conversation_history[-2:]:
                 message["turn_id"] = turn_id
@@ -307,16 +341,24 @@ class JarvisEngine:
                     {"type": "provider_usage", "cost_reported": llm_result.cost_reported if llm_result else True},
                     {"type": "provider_attempts", "attempts": llm_result.attempts if llm_result else []},
                     {"type": "runtime_context", **runtime_context},
+                    {"type": "deliberation", **deliberation},
                 ],
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
             )
             # --- 6. EVOLVE (sync with Spiral backend if available) ---
             backend_status = "skipped_read_only"
+            evolve_payload = None
             if decision == "answer" and request.memory_consent:
                 backend_status = "skipped_writes_disabled"
                 if settings.governed_writes_allowed():
-                    backend_status = await self._sync_with_spiral(state, request.message, reply)
+                    backend_status, evolve_payload = _spiral_sync_result(
+                        await self._sync_with_spiral(state, request.message, reply)
+                    )
+            if evolve_payload is not None:
+                admitted = admit_external("project_infinity", evolve_payload)
+                deliberation["claims"] = list(deliberation.get("claims") or []) + [admitted]
+                turn.evidence.append({"type": "external_suggestion", **admitted})
             turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
             turn.model = llm_result.model if llm_result else "bounded-local"
@@ -348,6 +390,9 @@ class JarvisEngine:
                         "correlation_id": correlation_id,
                         "runtime_context": runtime_context,
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
+                        "deliberation": deliberation,
+                        "claims": deliberation.get("claims") or [],
+                        "unsupported_claim_warning": deliberation.get("unsupported_claim_warning"),
                     },
                 },
                 {
@@ -366,6 +411,16 @@ class JarvisEngine:
             )
 
             audit_event = self.audit.list(state.session_id)[-1]
+            self._record_governance_outcomes(
+                state,
+                turn_id=turn_id,
+                decision=decision,
+                uncertainty=uncertainty,
+                stress=emotion.stress,
+                event_hash=audit_event["event_hash"],
+                provider_identity_available=bool(llm_result)
+                or settings.llm_provider.lower() in {"", "mock", "local"},
+            )
             self.reviver.save(
                 checkpoint_id=f"checkpoint-{turn_id}",
                 session_id=state.session_id,
@@ -424,6 +479,9 @@ class JarvisEngine:
                 correlation_id=correlation_id,
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
+                deliberation=deliberation,
+                claims=deliberation.get("claims") or [],
+                unsupported_claim_warning=deliberation.get("unsupported_claim_warning"),
             )
 
     # ------------------------------------------------------------------
@@ -481,6 +539,46 @@ class JarvisEngine:
     def is_read_only(self, session_id: str) -> bool:
         return session_id in self._read_only_sessions
 
+    def _record_governance_outcomes(
+        self,
+        state: JarvisState,
+        *,
+        turn_id: str,
+        decision: str,
+        uncertainty: float,
+        stress: float,
+        event_hash: str,
+        provider_identity_available: bool,
+    ) -> None:
+        """Persist observe-only lane results. Never changes this turn's decision."""
+
+        if not settings.governance_outcomes_enabled:
+            return
+        try:
+            context = policy_context_from_state(
+                state,
+                turn_id=turn_id,
+                uncertainty=uncertainty,
+                stress=stress,
+                audit_available=True,
+                continuity_auth=ContinuityAuthStatus.KNOWN,
+                hash_verified=True,
+                provider_identity_available=provider_identity_available,
+                checkpoint_integrity_ok=True,
+                side_effects_requested=False,
+            )
+            policy = evaluate_policies(context)
+            rows = outcomes_from_policy(
+                policy,
+                session_id=state.session_id,
+                turn_id=turn_id,
+                turn_decision=decision,
+                event_hash=event_hash,
+            )
+            self.store.save_governance_outcomes(rows)
+        except Exception:
+            logger.debug("Governance outcome recording skipped", exc_info=True)
+
     def clear_memory(self, session_id: str) -> dict[str, str]:
         state = self.get_session(session_id)
         if state is None:
@@ -498,22 +596,26 @@ class JarvisEngine:
     # Spiral backend sync
     # ------------------------------------------------------------------
 
-    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
-        """Optionally push state to the Spiral Intelligence backend."""
+    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> tuple[str, Any | None]:
+        """Optionally push state to the Spiral Intelligence backend.
+
+        Infinity/Evolve results are returned for evidence admission only. They do not revise this reply.
+        """
 
         if not settings.governed_writes_allowed() or self.store.tenant_id != "t_jon":
-            return "skipped_writes_disabled"
+            return "skipped_writes_disabled", None
 
+        evolve_payload: Any | None = None
         try:
             if self.infinity:
-                await self.infinity.evolve(
+                evolve_payload = await self.infinity.evolve(
                     job_id=f"jarvis-{state.session_id}-{state.turn_count}",
                     jarvis_run_id=state.session_id,
                     task=user_message,
                     initial_candidate=reply,
                 )
             if not await self.spiral.is_available():
-                return "unavailable"
+                return "unavailable", evolve_payload
 
             await self.spiral.spiral_turn(
                 session_id=state.session_id,
@@ -539,7 +641,7 @@ class JarvisEngine:
                 score=state.confidence,
                 notes=f"Jarvis turn {state.turn_count}: {user_message[:100]}",
             )
-            return "connected"
+            return "connected", evolve_payload
         except Exception as exc:
             logger.debug("Spiral sync skipped: %s", exc)
-            return "error"
+            return "error", evolve_payload

@@ -44,6 +44,15 @@ class OutcomeStatus(str, Enum):
     ABSTAINED = "abstained"
 
 
+class GovernanceCheckOutcome(str, Enum):
+    """Per-rule result of one governance check. Not a policy mutation."""
+
+    VIOLATION = "violation"
+    PASSED = "passed"
+    UNNECESSARY = "unnecessary"
+    SUCCESS = "success"
+
+
 class SideEffectStatus(str, Enum):
     NONE = "none"
     PENDING = "pending"

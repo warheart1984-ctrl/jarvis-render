@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from jarvis.auth import bind_user, guard_visitor_mutation, require_operator, require_session, visitor
 from jarvis.brain.engine import JarvisEngine
+from jarvis.brain.evolution import EvolutionEngine
 from jarvis.brain.inspection import inspect_session
 from jarvis.brain.llm import ProviderError
 from jarvis.core.config import settings
@@ -312,6 +313,31 @@ async def verify_audit(session_id: str, request: Request) -> dict[str, Any]:
     if not active.get_audit(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
     return active.verify_audit(session_id)
+
+
+@router.get("/governance/evolution")
+async def get_evolution_report(request: Request) -> dict[str, Any]:
+    """Latest tenant-scoped evolution report. Rules are never auto-applied."""
+
+    report = bound_engine(request).store.latest_evolution_report()
+    if report is None:
+        return {"status": "none", "auto_applied": False, "applied_changes": []}
+    report["auto_applied"] = False
+    report["applied_changes"] = report.get("applied_changes") or []
+    return report
+
+
+@router.post("/governance/evolution/run")
+async def run_evolution_cycle(
+    request: Request, x_jarvis_service_token: str = Header(default="")
+) -> dict[str, Any]:
+    """Operator-triggered report-only cycle. Hard-coded policy stays authoritative."""
+
+    require_operator(request)
+    if not settings.service_token or not secrets.compare_digest(x_jarvis_service_token, settings.service_token):
+        raise HTTPException(status_code=401, detail="Evolution cycle requires a valid service token")
+    report = EvolutionEngine(bound_engine(request).store).run_cycle()
+    return report
 
 
 @router.delete("/memory/{session_id}")
