@@ -125,8 +125,8 @@ async def service_boundary(request: Request, call_next):
 
 
 # CORS — origins are driven by JARVIS_CORS_ORIGINS (comma-separated).
-# Default "*" is for local development only; set an explicit allowlist in production.
-_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# Default "*" is for local development only; production uses an explicit allowlist.
+_cors_origins = settings.allowed_cors_origins()
 _allow_credentials = _cors_origins != ["*"]
 app.add_middleware(
     CORSMiddleware,
