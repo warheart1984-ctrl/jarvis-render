@@ -37,13 +37,15 @@ from jarvis.brain.tools import (
     citations_from_tool_record,
     evidence_from_tool_record,
     may_admit_retrieved_to_memory,
-    maybe_ledger_recall,
     maybe_calculator,
     maybe_clock,
+    maybe_ledger_recall,
+    maybe_nx_search,
     maybe_web_search,
     quoted_local_payload,
     quoted_search_payload,
 )
+from jarvis.brain.tools.search import evidence_from_search_hit
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.governance.adapters import policy_context_from_state
@@ -283,7 +285,12 @@ class JarvisEngine:
                 transaction_id=turn_id,
                 correlation_id=correlation_id,
             )
-            tool_records = [item for item in (search_record, calc_record, clock_record) if item is not None]
+            nx_record = maybe_nx_search(
+                message=request.message,
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
+            )
+            tool_records = [item for item in (search_record, calc_record, clock_record, nx_record) if item is not None]
             for record in tool_records:
                 self.audit.append(
                     uuid4().hex,
@@ -295,6 +302,8 @@ class JarvisEngine:
                 if record is search_record and search_record is not None:
                     for hit in search_record.sources:
                         runner.add_evidence(evidence_from_search_hit(hit))
+                for ev in evidence_from_tool_record(record):
+                    runner.add_evidence(ev)
             # Observe-only Continuity recall before invention. No writes; degrades
             # on ledger unavailability; never fail-closed. Evidence is MEMORY-kind.
             recall_outcome = await maybe_ledger_recall(
@@ -374,11 +383,6 @@ class JarvisEngine:
                 )
             search_quotes = (
                 quoted_search_payload(search_record.sources) if search_record and search_record.sources else None
-            )
-            search_citations = (
-                [search_citation(item, session_id=state.session_id) for item in search_record.sources]
-                if search_record
-                else None
             )
             recall_quotes = recall_outcome.quotes if recall_outcome is not None else None
             recall_citations = recall_outcome.citations if recall_outcome is not None else None
