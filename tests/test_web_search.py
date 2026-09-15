@@ -291,8 +291,8 @@ async def test_unsupported_factual_and_safety_after_search_still_fail_closed(tmp
         hits=[PARIS_HIT],
     )
     assert factual.deliberation["response_commit"] != "committed"
-    assert factual.deliberation["response_commit"] == "qualified"
-    assert QUALIFY_NOTE in factual.reply
+    assert factual.deliberation["response_commit"] == "refused"
+    assert factual.reply == BLOCK_REPLY
 
     engine2 = _engine(tmp_path, "safety")
     safety, _ = await _chat(
@@ -365,7 +365,8 @@ async def test_no_auto_retrieve_without_explicit_search(tmp_path, monkeypatch) -
     assert response.tool_calls == []
     assert backend.calls == []
     assert response.deliberation["response_commit"] != "committed"
-    assert QUALIFY_NOTE in response.reply
+    assert response.deliberation["response_commit"] == "refused"
+    assert response.reply == BLOCK_REPLY
 
 
 @pytest.mark.asyncio

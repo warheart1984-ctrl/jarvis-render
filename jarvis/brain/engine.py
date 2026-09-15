@@ -405,15 +405,18 @@ class JarvisEngine:
             runtime_context["context_receipt"] = receipt
             try:
                 runner.evaluate(reply)
-                if runner.gated_reply:
-                    reply = runner.gated_reply
-                if runner.challenge_action is not None:
-                    decision = map_challenge_decision(runner.challenge_action, decision)
-                if runner.response_commit == "abstained" or runner.challenge_action is ChallengeAction.ABSTAIN:
-                    decision = "abstain"
-                elif runner.response_commit == "refused" and decision == "answer":
-                    decision = "fail_closed"
-                    reasons.append("safety-critical claim lacked verification")
+                if not (llm_result and llm_result.safe_mode):
+                    # Safe-mode replies are canned availability text, not an LLM answer
+                    # to gate; provider unavailability stays degraded, never fail_closed.
+                    if runner.gated_reply:
+                        reply = runner.gated_reply
+                    if runner.challenge_action is not None:
+                        decision = map_challenge_decision(runner.challenge_action, decision)
+                    if runner.response_commit == "abstained" or runner.challenge_action is ChallengeAction.ABSTAIN:
+                        decision = "abstain"
+                    elif runner.response_commit == "refused" and decision == "answer":
+                        decision = "fail_closed"
+                        reasons.append("safety-critical claim lacked verification")
                 deliberation = runner.commit()
             except DeliberationBlocked as exc:
                 reasons.append(str(exc))
