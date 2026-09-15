@@ -133,7 +133,7 @@ def cer_engine(monkeypatch, tmp_path):
     generate = AsyncMock(return_value=LLMResult("The sky might be cloudy today.", "test", "model", 1))
     monkeypatch.setattr("jarvis.brain.engine.generate_llm_reply", generate)
     engine = JarvisEngine(store=JarvisStore(tmp_path / "cer.sqlite3"))
-    monkeypatch.setattr(engine, "_sync_with_spiral", AsyncMock(return_value="skipped"))
+    monkeypatch.setattr(engine, "_sync_with_spiral", AsyncMock(return_value=("skipped", None)))
     return engine
 
 

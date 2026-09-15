@@ -21,7 +21,19 @@ def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None =
         "turns": [],
         "withheld_records": 0,
         "previous_session": {"status": "not_used"},
+        "evolution": {"status": "none", "auto_applied": False, "applied_changes": []},
     }
+    latest = engine.store.latest_evolution_report()
+    if latest:
+        result["evolution"] = {
+            "status": latest.get("status", "ok"),
+            "report_id": latest.get("report_id"),
+            "created_at": latest.get("created_at"),
+            "auto_applied": False,
+            "applied_changes": latest.get("applied_changes") or [],
+            "checks_mined": latest.get("checks_mined"),
+            "suggestion_count": len(latest.get("suggestions") or []),
+        }
     if not engine.audit.verify(state.session_id):
         result["status"] = "unverified"
         return result
