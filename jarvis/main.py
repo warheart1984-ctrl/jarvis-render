@@ -57,7 +57,9 @@ async def service_boundary(request: Request, call_next):
     """Protect state-changing and diagnostic routes when deployed with a token."""
     # Match the router's actual path, never a URL reconstructed from the Host header.
     path = request.scope["path"]
-    protected = path in {"/chat", "/capabilities"} or path.startswith(("/sessions/", "/memory/", "/state/", "/voice/"))
+    protected = path in {"/chat", "/capabilities"} or path.startswith(
+        ("/sessions/", "/memory/", "/state/", "/voice/", "/governance/")
+    )
     request_id = request.headers.get("X-Request-ID") or uuid4().hex
     request.state.request_id = request_id
     if protected:

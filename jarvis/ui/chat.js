@@ -3,7 +3,7 @@ import { clearDraftsOnLogout, composerDraftAfterAuth, preserveDraftOnNewChat, wr
 import { fallbackWaitMessage } from "./inference.js";
 import { lockBanner } from "./locks.js";
 import { recallStatus } from "./recall.js";
-import { deliberationView, receiptView, renderInspection } from "./memory.js";
+import { cerView, deliberationView, receiptView, renderInspection } from "./memory.js";
 
 const $ = id => document.getElementById(id);
 let session = "", connected = false, busy = false, recovered = false;
@@ -137,6 +137,7 @@ function message(role, text, response = null, turnId = "") {
   if (role !== "user") {
     article.append(receiptView(response?.context_receipt, response?.turn_id || turnId));
     if (response?.deliberation) article.append(deliberationView(response.deliberation));
+    if (response?.cer) article.append(cerView(response.cer));
   }
   $("messages").append(article); article.scrollIntoView({ block: "nearest" });
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { coverageLabel, deliberationSummary, deliberationView, receiptSummary, receiptView, renderInspection } from "../jarvis/ui/memory.js";
+import { cerView, coverageLabel, deliberationSummary, deliberationView, receiptSummary, receiptView, renderInspection } from "../jarvis/ui/memory.js";
 
 // Tiny strict DOM stub: HTML injection and links fail instead of silently passing.
 class Node {
@@ -77,4 +77,21 @@ test("abstain envelope renders committed no, not yes", () => {
   assert.match(text, /held/);
   assert.match(text, /\bno\b/);
   assert.doesNotMatch(text, /\byes\b/);
+});
+test("inspection shows CER replay fields from the existing audit without a research UI", () => {
+  const view = cerView({
+    version: "jarvis-cer-v1",
+    schema: "constitutional_execution_record",
+    model_identity: {provider: "test", model: "model"},
+    verification: {challenge: "completed"},
+    replay: {input_sha256: "aa", content_sha256: "bb"},
+    lineage: {previous_turn_id: "turn-1"}
+  });
+  const text = allText(view);
+  assert.match(text, /existing audit/);
+  assert.match(text, /Not a separate ledger/);
+  assert.match(text, /test \/ model/);
+  assert.match(text, /turn-1/);
+  assert.ok(text.includes("aa"));
+  assert.ok(text.includes("bb"));
 });

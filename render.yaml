@@ -10,6 +10,8 @@ services:
         value: production
       - key: JARVIS_GOVERNED_WRITES_ENABLED
         value: "false"
+      - key: JARVIS_EVOLUTION_ENABLED
+        value: "false"
       - key: JARVIS_LLM_PROVIDER
         value: nvidia
       - key: JARVIS_LLM_MODEL

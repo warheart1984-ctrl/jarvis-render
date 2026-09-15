@@ -53,6 +53,12 @@ class JarvisSettings(BaseSettings):
     spiral_private_api_base: str = "http://127.0.0.1:8787"
     infinity_api_base: str = ""
     infinity_enabled: bool = False
+    # Observe-only governance check recording. Does not change fail-closed policy.
+    governance_outcomes_enabled: bool = True
+    # Report-only policy-weight suggestions. Never auto-applies rule changes.
+    evolution_enabled: bool = False
+    evolution_min_checks: int = Field(default=5, ge=1, le=500)
+    evolution_mine_limit: int = Field(default=200, ge=10, le=2000)
 
     # Jarvis identity
     jarvis_user_id: str = "jarvis"
@@ -96,6 +102,16 @@ class JarvisSettings(BaseSettings):
     memory_db_path: str = "jarvis.sqlite3"
     continuity_ledger_url: str = ""
     continuity_ledger_token: str = ""
+    # Observe-only tool belt (ledger recall, nx_search, web search). Never auto-writes memory.
+    observe_tools_enabled: bool = True
+    nx_search_bin: str = ""
+    nx_search_node: str = "node"
+    web_search_enabled: bool = False
+    web_search_provider: Literal["none", "ddg", "brave"] = "none"
+    brave_search_api_key: str = ""
+    observe_cache_ttl_seconds: int = Field(default=90, ge=5, le=600)
+    observe_tool_timeout_seconds: float = Field(default=8.0, ge=1, le=30)
+    observe_nx_limit: int = Field(default=8, ge=1, le=25)
     service_token: str = ""
     # Single-operator recall; never derive this principal from the request's user_id.
     recall_owner_user_id: str = ""
