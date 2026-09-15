@@ -35,16 +35,21 @@ def _engine(tmp_path, name: str = "promote") -> JarvisEngine:
 
 def _state_with_draft(engine: JarvisEngine, *, content: str, category: str = "preference") -> JarvisState:
     state = JarvisState(user_id="owner", session_id="s-promote")
-    state.long_term_memory.append(
-        JarvisMemoryEntry(
-            memory_id="local-1",
-            user_id="owner",
-            session_id="s-promote",
-            content=content,
-            category=category,
-            importance=0.7,
-        )
+    # Mimic extract_memory prefixes so promotion is allowed
+    if category == "preference":
+        prefixed = f"Preference: {content}"
+    else:
+        prefixed = f"User said: {content}"
+    entry = JarvisMemoryEntry(
+        memory_id="local-1",
+        user_id="owner",
+        session_id="s-promote",
+        content=prefixed,
+        category=category,
+        importance=0.7,
     )
+    entry.metadata["status"] = "draft"
+    state.long_term_memory.append(entry)
     return state
 
 
@@ -66,8 +71,8 @@ async def test_preview_never_calls_ledger(tmp_path):
     assert engine.continuity is None
 
     assert preview["proposal"]["ledger_type"] == "preference"
-    assert preview["proposal"]["content_sha256"] == _sha("I prefer concrete builds.")
-    assert preview["content_preview"] == "I prefer concrete builds."
+    assert preview["proposal"]["content_sha256"] == _sha("Preference: I prefer concrete builds.")
+    assert preview["content_preview"] == "Preference: I prefer concrete builds."
 
 
 def test_build_proposal_maps_type_and_subject() -> None:
@@ -84,9 +89,15 @@ def test_build_proposal_maps_type_and_subject() -> None:
 
 def test_build_proposal_architecture_subject_and_research_type() -> None:
     state = JarvisState(user_id="owner", session_id="s")
-    state.long_term_memory.append(
-        JarvisMemoryEntry(memory_id="local-2", user_id="owner", session_id="s", content="Build a spiral model", category="spiral_intelligence")
+    entry = JarvisMemoryEntry(
+        memory_id="local-2",
+        user_id="owner",
+        session_id="s",
+        content="User said: Build a spiral model",
+        category="spiral_intelligence",
     )
+    entry.metadata["status"] = "draft"
+    state.long_term_memory.append(entry)
     proposal = build_proposal(state, state.long_term_memory[0])
     assert proposal.ledger_type == "architecture"
     assert proposal.subject == "jarvis-prototype"
@@ -94,9 +105,99 @@ def test_build_proposal_architecture_subject_and_research_type() -> None:
 
 
 def test_build_proposal_rejects_empty_content() -> None:
-    state = _state_with_draft(JarvisEngine(store=None), content="   ")  # type: ignore[arg-type]
+    state = JarvisState(user_id="owner", session_id="s")
+    mem = JarvisMemoryEntry(
+        memory_id="empty-1",
+        user_id="owner",
+        session_id="s",
+        content="User said:    ",
+        category="general",
+    )
+    mem.metadata["status"] = "draft"
     with pytest.raises(ValueError, match="empty"):
-        build_proposal(state, state.long_term_memory[0])
+        build_proposal(state, mem)
+
+
+def test_build_proposal_rejects_tool_sourced_memory() -> None:
+    state = JarvisState(user_id="owner", session_id="s")
+    mem = JarvisMemoryEntry(
+        memory_id="tool-1",
+        user_id="owner",
+        session_id="s",
+        content="User said: web snippet about Paris",
+        category="general",
+        importance=0.5,
+    )
+    mem.metadata["source"] = "web_search"
+    mem.metadata["status"] = "draft"
+    with pytest.raises(ValueError, match="tool-sourced"):
+        build_proposal(state, mem)
+
+
+def test_build_proposal_rejects_missing_provenance_marker() -> None:
+    state = JarvisState(user_id="owner", session_id="s")
+    mem = JarvisMemoryEntry(
+        memory_id="bad-1",
+        user_id="owner",
+        session_id="s",
+        content="Just some text without prefix",
+        category="general",
+        importance=0.5,
+    )
+    mem.metadata["status"] = "draft"
+    with pytest.raises(ValueError, match="user provenance"):
+        build_proposal(state, mem)
+
+
+def test_build_proposal_rejects_missing_status_metadata() -> None:
+    state = JarvisState(user_id="owner", session_id="s")
+    mem = JarvisMemoryEntry(
+        memory_id="bad-2",
+        user_id="owner",
+        session_id="s",
+        content="User said: something",
+        category="general",
+        importance=0.5,
+    )
+    # no status metadata
+    with pytest.raises(ValueError, match="provenance metadata"):
+        build_proposal(state, mem)
+
+
+
+def test_build_proposal_rejects_forbidden_evidence_kind() -> None:
+    state = JarvisState(user_id="owner", session_id="s")
+    mem = JarvisMemoryEntry(
+        memory_id="ev-1",
+        user_id="owner",
+        session_id="s",
+        content="User said: something grounded",
+        category="general",
+        importance=0.5,
+    )
+    mem.metadata["status"] = "draft"
+    with pytest.raises(ValueError, match="tool-sourced"):
+        build_proposal(
+            state,
+            mem,
+            evidence=[{"kind": "web_search", "ref": "hit-1"}],
+        )
+
+
+def test_build_proposal_rejects_snippet_metadata() -> None:
+    state = JarvisState(user_id="owner", session_id="s")
+    mem = JarvisMemoryEntry(
+        memory_id="snip-1",
+        user_id="owner",
+        session_id="s",
+        content="User said: looks grounded",
+        category="general",
+        importance=0.5,
+    )
+    mem.metadata["status"] = "draft"
+    mem.metadata["snippets"] = ["retrieved hit"]
+    with pytest.raises(ValueError, match="tool-sourced"):
+        build_proposal(state, mem)
 
 
 def test_gate_closed_when_writes_disabled(monkeypatch) -> None:
@@ -226,7 +327,7 @@ async def test_apply_propose_then_verify_then_reconcile(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "environment", "development")
     engine = _engine(tmp_path)
     content = "I prefer concrete builds."
-    digest = _sha(content)
+    digest = _sha(f"Preference: {content}")
     engine.continuity = AsyncMock()
     engine.continuity.propose_memory = AsyncMock(
         return_value={
@@ -301,16 +402,16 @@ HEADERS = {"X-Jarvis-Service-Token": "test-service-token"}
 def _route_draft(engine, sid: str) -> str:
     state = engine.get_session(sid)
     assert state is not None
-    state.long_term_memory.append(
-        JarvisMemoryEntry(
-            memory_id="route-mem-1",
-            user_id="owner",
-            session_id=sid,
-            content="Preference: I prefer concrete builds.",
-            category="preference",
-            importance=0.8,
-        )
+    entry = JarvisMemoryEntry(
+        memory_id="route-mem-1",
+        user_id="owner",
+        session_id=sid,
+        content="Preference: I prefer concrete builds.",
+        category="preference",
+        importance=0.8,
     )
+    entry.metadata["status"] = "draft"
+    state.long_term_memory.append(entry)
     engine._save_session(state)
     return "route-mem-1"
 

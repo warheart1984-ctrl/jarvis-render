@@ -77,12 +77,15 @@ async def preview_memory_promotion(
     memory = next((m for m in state.long_term_memory if m.memory_id == request.memory_id), None)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-    proposal = build_proposal(
-        state,
-        memory,
-        user_requested=request.user_requested,
-        supersedes_ledger_id=request.supersedes_ledger_id,
-    )
+    try:
+        proposal = build_proposal(
+            state,
+            memory,
+            user_requested=request.user_requested,
+            supersedes_ledger_id=request.supersedes_ledger_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     gate = check_gate(
         continuity_configured=active.continuity is not None,
         read_only=active.is_read_only(request.session_id),
@@ -118,12 +121,15 @@ async def promote_memory(request: MemoryPromotionRequest, http_request: Request)
     memory = next((m for m in state.long_term_memory if m.memory_id == request.memory_id), None)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-    proposal = build_proposal(
-        state,
-        memory,
-        user_requested=True,
-        supersedes_ledger_id=request.supersedes_ledger_id,
-    )
+    try:
+        proposal = build_proposal(
+            state,
+            memory,
+            user_requested=True,
+            supersedes_ledger_id=request.supersedes_ledger_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = await apply_promotion(active, state, proposal)
     if result.get("status") == "refused":
         reasons = result.get("reasons", [])

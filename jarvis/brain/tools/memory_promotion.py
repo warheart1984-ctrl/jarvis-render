@@ -63,6 +63,77 @@ class MemoryPromotionProposal:
     supersedes_ledger_id: str | None = None
 
 
+# Provenance markers aligned with extract_memory() in jarvis/brain/memory.py.
+_USER_CONTENT_PREFIXES: tuple[str, ...] = ("User said:", "Preference:")
+_FORBIDDEN_SOURCES: frozenset[str] = frozenset(
+    {
+        "tool",
+        "search",
+        "web_search",
+        "tool_external",
+        "retrieved",
+        "snippet",
+        "inferred",
+        "hypothesized",
+        "assistant",
+        "model",
+    }
+)
+_FORBIDDEN_EVIDENCE_KINDS: frozenset[str] = frozenset(
+    {"tool", "search", "web_search", "snippet", "retrieved", "model"}
+)
+
+
+def _user_grounded_body(content: str) -> str | None:
+    """Return the body after a user-grounded prefix, or None if prefix missing."""
+
+    for prefix in _USER_CONTENT_PREFIXES:
+        if content.startswith(prefix):
+            return content[len(prefix) :].strip()
+    return None
+
+
+def assert_promotable_provenance(
+    memory: JarvisMemoryEntry,
+    *,
+    evidence: list[dict[str, str]] | None = None,
+) -> None:
+    """Fail closed unless the draft is user-grounded and non-tool-sourced.
+
+    extract_memory only admits User said:/Preference: drafts with metadata.status.
+    Any tool/search/snippet/inferred marker refuses promotion.
+    """
+
+    content = (memory.content or "").strip()
+    if not content:
+        raise ValueError("Memory content is empty")
+
+    body = _user_grounded_body(content)
+    if body is None:
+        raise ValueError("Memory lacks user provenance marker; promotion refused")
+    if not body:
+        raise ValueError("Memory content is empty")
+
+    meta = memory.metadata or {}
+    if not meta.get("status"):
+        raise ValueError("Memory missing provenance metadata; promotion refused")
+
+    for key in ("source", "source_type", "origin", "provenance"):
+        val = str(meta.get(key, "") or "").strip().lower()
+        if val in _FORBIDDEN_SOURCES:
+            raise ValueError("Memory appears tool-sourced; promotion refused")
+
+    if meta.get("snippets"):
+        raise ValueError("Memory appears tool-sourced; promotion refused")
+    if meta.get("tool_name") or meta.get("tool_call_id"):
+        raise ValueError("Memory appears tool-sourced; promotion refused")
+
+    for ref in evidence or []:
+        kind = str(ref.get("kind", "") or "").strip().lower()
+        if kind in _FORBIDDEN_EVIDENCE_KINDS:
+            raise ValueError("Memory appears tool-sourced; promotion refused")
+
+
 def build_proposal(
     state: JarvisState,
     memory: JarvisMemoryEntry,
@@ -77,9 +148,9 @@ def build_proposal(
     (never silently promote retrieved/snippet content).
     """
 
+    assert_promotable_provenance(memory, evidence=evidence)
+
     content = (memory.content or "").strip()
-    if not content:
-        raise ValueError("Memory content is empty")
     if len(content) > 2000:
         content = content[:2000]
 
