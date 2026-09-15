@@ -716,7 +716,7 @@ def action_for_class(claim_class: ClaimClass, support: ClaimSupport) -> Challeng
                 return ChallengeAction.CONTINUE
             if support is ClaimSupport.WEAK:
                 return ChallengeAction.DOWNGRADE
-            return ChallengeAction.BLOCK
+            return ChallengeAction.QUALIFY
         case ClaimClass.CAUSAL:
             if support is ClaimSupport.PRESENT:
                 return ChallengeAction.CONTINUE

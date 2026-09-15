@@ -21,6 +21,7 @@ from jarvis.brain.deliberation import (
     evidence_from_citation,
     map_challenge_decision,
     message_looks_hypothetical,
+    _looks_like_world_fact,
 )
 from jarvis.brain.emotion import infer_emotion
 from jarvis.brain.llm import ProviderError, generate_llm_reply
@@ -45,7 +46,7 @@ from jarvis.brain.tools import (
     quoted_local_payload,
     quoted_search_payload,
 )
-from jarvis.brain.tools.search import evidence_from_search_hit
+from jarvis.brain.tools.search import evidence_from_search_hit, run_web_search
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.governance.adapters import policy_context_from_state
@@ -275,6 +276,23 @@ class JarvisEngine:
                 quota=self.access.consume_quota,
                 backend=self.search_backend,
             )
+            # Pre-Commit observe for ordinary world FACTUAL messages
+            if search_record is None and _looks_like_world_fact(request.message):
+                try:
+                    query = request.message[:240]
+                    search_record = await run_web_search(
+                        query=query,
+                        session_id=state.session_id,
+                        tenant_id=self.store.tenant_id,
+                        owner_sub=self.store.owner_sub,
+                        transaction_id=turn_id,
+                        correlation_id=correlation_id,
+                        quota=self.access.consume_quota,
+                        backend=self.search_backend,
+                    )
+                except Exception:
+                    # Degrade silently; do not fail-closed governance
+                    search_record = None
             calc_record = await maybe_calculator(
                 message=request.message,
                 transaction_id=turn_id,

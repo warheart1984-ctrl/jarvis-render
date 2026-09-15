@@ -10,6 +10,7 @@ from jarvis.brain.deliberation import (
     BLOCK_REPLY,
     DOS_LITE_LABEL,
     DOS_LITE_VERSION,
+    QUALIFY_NOTE,
     ChallengeAction,
     ClaimTag,
     DeliberationBlocked,
@@ -388,11 +389,11 @@ def test_require_evidence_unsupported_factual_is_not_a_committed_raw_assertion()
         c for c in result.claims if c.claim_id.startswith("claim-reply") and c.claim_class.value == "factual"
     )
     assert factual.support.value == "missing"
-    assert result.response_commit == "refused"
-    assert result.committed is False
-    assert result.memory_admission == "blocked"
-    assert runner.gated_reply == BLOCK_REPLY
-    assert runner.gated_reply != raw
+    assert result.response_commit == "qualified"
+    assert result.committed is True
+    assert result.memory_admission == "eligible"
+    assert runner.gated_reply != BLOCK_REPLY
+    assert QUALIFY_NOTE in runner.gated_reply
     public = json.dumps(result.to_public_dict())
     assert "match_text" not in public
 
@@ -455,16 +456,17 @@ def test_factual_gap_blocks_response() -> None:
     runner.challenge(uncertainty=0.18, stress=0.1)
     runner.evaluate("Paris is the capital of a country that was never mentioned.")
     result = runner.commit()
-    assert result.committed is False
-    assert result.response_commit == "refused"
+    assert result.committed is True
+    assert result.response_commit == "qualified"
     assert result.memory_admission == "blocked"
-    assert result.challenge_action is ChallengeAction.BLOCK
-    assert runner.gated_reply == BLOCK_REPLY
+    assert result.challenge_action is ChallengeAction.QUALIFY
+    assert runner.gated_reply != BLOCK_REPLY
+    assert QUALIFY_NOTE in runner.gated_reply
     factual = next(
         c for c in result.claims if c.claim_class.value == "factual" and c.claim_id.startswith("claim-reply")
     )
     assert factual.support.value == "missing"
-    assert factual.action is ChallengeAction.BLOCK
+    assert factual.action is ChallengeAction.QUALIFY
 
 
 def test_causal_gap_blocks_response_and_holds_memory() -> None:
