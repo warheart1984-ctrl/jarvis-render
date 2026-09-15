@@ -16,7 +16,7 @@ import ipaddress
 import re
 import time
 from collections.abc import Callable
-from typing import Any, Protocol, assert_never
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -28,7 +28,6 @@ from jarvis.brain.tools.envelope import (
     ToolCallStatus,
     ToolName,
     fence_untrusted_data,
-    stub_tool_call,
     utc_now,
     validate_tool_arguments,
 )
@@ -597,4 +596,3 @@ def quoted_search_payload(receipts: list[SourceReceipt]) -> dict[str, Any]:
             for item in receipts
         ]
     )
-

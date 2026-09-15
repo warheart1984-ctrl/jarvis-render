@@ -1,13 +1,16 @@
 """Shared v0 tool-call envelope.
 
-Every tool — including observe-only ``web_search`` and the named stubs — uses
-this record. Missing identity fields fail closed. Retrieved snippets are fenced
-as data, never instructions. Calculator, clock, weather, document retrieval,
-and health are stubs so later tools do not invent a second kernel.
+Every tool — observe-only ``web_search``, local ``calculator`` / ``clock``, and
+the named stubs — uses this record. Missing identity fields fail closed.
+Retrieved snippets are fenced as untrusted data, never instructions. Local
+calculator and clock results are deterministic facts, still never memory.
+Weather, document retrieval, and health remain stubs so later tools do not
+invent a second kernel.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, assert_never
@@ -19,8 +22,12 @@ from jarvis.governance.secrets import omit_secrets
 _SUMMARY_LIMIT = 240
 _URL_LIMIT = 500
 _QUERY_LIMIT = 500
+MAX_EXPRESSION_CHARS = 120
+LOCAL_TIMEOUT_SECONDS = 1.0
 UNTRUSTED_DATA_CHANNEL = "untrusted_external_data"
+LOCAL_DATA_CHANNEL = "local_deterministic_data"
 WHO_MAY_PROMOTE_LATER = ("user_explicit_request", "emr_gate")
+_MATH_CHARS = re.compile(r"^[\d\s+\-*/().%eE]+$")
 
 
 class ToolName(str, Enum):
@@ -85,6 +92,7 @@ class ToolCallRecord(BaseModel):
     result_hash: str = ""
     citations: list[str] = Field(default_factory=list)
     sources: list[SourceReceipt] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
     observe_only: bool = True
     memory_written: bool = False
     memory_eligible: bool = False
@@ -133,8 +141,6 @@ class ToolCallRecord(BaseModel):
 
 STUB_TOOLS = frozenset(
     {
-        ToolName.CALCULATOR,
-        ToolName.CLOCK,
         ToolName.WEATHER,
         ToolName.DOCUMENT_RETRIEVAL,
         ToolName.HEALTH,
@@ -149,6 +155,12 @@ def utc_now() -> str:
 def may_admit_retrieved_to_memory(*, user_requested: bool = False) -> bool:
     """Whether retrieved tool text may become memory.
 
+    Always false in this release, including local calculator/clock output and
+    retrieved search snippets. A later path (not shipped) would require both
+    an explicit user request and an EMR gate before a cited hit could become a
+    draft memory or Continuity ledger record. EMR is not implemented.
+    ``JARVIS_GOVERNED_WRITES_ENABLED`` stays off. ``user_requested`` cannot
+    bypass that. Local deterministic facts are not a second memory path.
     Always false. Hypothesized claims, tool/search snippets, and inferred
     summaries stay off the memory / preferences / Continuity write path even
     when the reply is a polished summary of a hit. ``user_requested`` and
@@ -171,6 +183,43 @@ def fence_untrusted_data(items: list[dict[str, str]]) -> dict[str, Any]:
         "memory_eligible": False,
         "items": items,
     }
+
+
+def fence_local_data(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Local calculator/clock facts. Not web snippets; still never instructions or memory."""
+
+    return {
+        "channel": LOCAL_DATA_CHANNEL,
+        "kind": "data",
+        "origin": "local_deterministic",
+        "instructions": False,
+        "executable": False,
+        "authority": False,
+        "memory_eligible": False,
+        "items": items,
+    }
+
+
+def quoted_local_payload(records: list[ToolCallRecord]) -> dict[str, Any] | None:
+    """Local facts for the user channel. Never concatenated into system/governance prompts."""
+
+    items: list[dict[str, Any]] = []
+    for record in records:
+        if record.tool_name not in {ToolName.CALCULATOR.value, ToolName.CLOCK.value}:
+            continue
+        if record.status is not ToolCallStatus.ACCEPTED:
+            continue
+        items.append(
+            {
+                "tool_name": record.tool_name,
+                "arguments": record.arguments,
+                "result": record.result,
+                "citation_id": record.citations[0] if record.citations else "",
+            }
+        )
+    if not items:
+        return None
+    return fence_local_data(items)
 
 
 def validate_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
@@ -215,6 +264,19 @@ def validate_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) ->
             | ToolName.DOCUMENT_RETRIEVAL
             | ToolName.HEALTH
         ):
+        case ToolName.CALCULATOR:
+            expression = str(args.get("expression") or "").strip()
+            if not expression or len(expression) > MAX_EXPRESSION_CHARS:
+                raise ValueError(f"calculator requires an expression of 1..{MAX_EXPRESSION_CHARS} characters")
+            if _MATH_CHARS.fullmatch(expression) is None:
+                raise ValueError("calculator expression contains unsupported characters")
+            return {"expression": expression}
+        case ToolName.CLOCK:
+            zone = str(args.get("timezone") or "UTC").strip() or "UTC"
+            if zone.upper() != "UTC":
+                raise ValueError("clock supports UTC only")
+            return {"timezone": "UTC"}
+        case ToolName.WEATHER | ToolName.DOCUMENT_RETRIEVAL | ToolName.HEALTH:
             return args
         case _:
             assert_never(tool)
@@ -239,6 +301,9 @@ def stub_tool_call(
             | ToolName.DOCUMENT_RETRIEVAL
             | ToolName.HEALTH
         ):
+        case ToolName.WEB_SEARCH | ToolName.CALCULATOR | ToolName.CLOCK:
+            raise ValueError(f"{name.value} is implemented; do not stub it")
+        case ToolName.WEATHER | ToolName.DOCUMENT_RETRIEVAL | ToolName.HEALTH:
             pass
         case _:
             assert_never(name)
@@ -254,5 +319,8 @@ def stub_tool_call(
         retryable=False,
         provider="none",
         model="none",
-        error=f"{name.value} is a named stub; only observe-only web_search is implemented",
+        error=(
+            f"{name.value} is a named stub; implemented tools are observe-only web_search, "
+            "local calculator, and local clock"
+        ),
     )

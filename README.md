@@ -72,30 +72,39 @@ external text is evidence, never authority. Challenge can qualify, downgrade,
 revise, or block by claim class. Response commit and memory admission are
 separate. Observe-only web search may admit provider snippets as evidence when
 the user explicitly asks to search; it is not unrestricted RAG and cannot
-write memory. Compare, Reflect, CER replay, and OTEM-governed continuity writes
+write memory. Calculator and clock are local deterministic tools on the same
+envelope; they also cannot write memory. Compare, Reflect, CER replay, and OTEM-governed continuity writes
 are **not** this release. See [DOS-lite deliberation](docs/DELIBERATION.md).
 
-### v0 tool belt (web search observe-only)
+### v0 tool belt (shipped vs declared)
 
-Same honesty bar as the emotion classifier and spiral-state tracker: a real,
-tested module with declared limits — not a general agent runtime.
+Same honesty bar as the emotion classifier and spiral-state tracker: real,
+tested modules with declared limits — not a general agent runtime. Every tool
+uses the same `ToolCallRecord` envelope (name, validated args, timeout,
+transaction/correlation ids, hashes, audit). Results are evidence or local
+facts, never instructions, never governance, never automatic memory.
 
-**Working:** observe-only web search. Jarvis may call the configured search
-provider and cite snippets from the provider JSON when the user explicitly asks
-to search. v0 does not retrieve target pages; SSRF-on-fetch is not the live
-surface, and any later fetch-this-URL path must add SSRF protections before it
-ships. Provider snippets are untrusted data (never instructions, never
-executable, never authority). They enter DOS-lite as `TOOL_EXTERNAL` evidence
-before Commit. Citation is not memory admission. Localhost, link-local, RFC1918,
-and other non-global IP-literal URLs are not admitted as citeable sources.
+**Shipped (working):**
+- **Observe-only web search** — provider JSON snippets only when the user
+  explicitly asks to search. v0 does not retrieve target pages; SSRF-on-fetch
+  is not the live surface. Snippets are untrusted data (never instructions,
+  never executable, never authority). They enter DOS-lite as `TOOL_EXTERNAL`
+  evidence before Commit. Citation is not memory admission. Localhost,
+  link-local, RFC1918, and other non-global IP-literal URLs are not admitted
+  as citeable sources.
+- **Calculator** — local, no network, safe arithmetic (not Python `eval`).
+  Explicit calculate / “what is 2+2” only; not every turn.
+- **Time/clock** — local timezone-aware UTC timestamp. Explicit “what time
+  is it” only. UTC is honest; this is not weather and not IANA conversion.
 
-**Declared, not implemented** (named stubs on the same `ToolCallRecord`):
-calculator, health/status, clock/weather, tenant RAG / document retrieval.
+**Declared, not implemented** (named stubs or later rings on the same belt):
+health/status, Continuity read-only as a kit tool, tenant RAG / document
+retrieval, vision/media, OTEM, weather.
 
-Hits cannot auto-write memory. A later promotion path (not shipped) would
-need an explicit user request **and** an EMR gate. EMR is not implemented;
-`JARVIS_GOVERNED_WRITES_ENABLED` stays off. Nobody can promote a search hit
-to draft/ledger today. This is not unrestricted browse.
+Tool outputs cannot auto-write memory. `may_admit_retrieved_to_memory()`
+returns false. A later promotion path (not shipped) would need an explicit
+user request **and** an EMR gate. EMR is not implemented;
+`JARVIS_GOVERNED_WRITES_ENABLED` stays off. This is not unrestricted browse.
 
 ## Architecture
 
@@ -106,7 +115,7 @@ User  ──▶  Jarvis API (FastAPI :8100)
               │   ├─ Emotion classifier (v0 keyword heuristic + optional BiofeedbackState)
               │   ├─ Spiral-state tracker (v0 five-variable bounded state machine)
               │   ├─ DOS-lite deliberation (v0 Observe→…→Commit heuristic; not a DOS Kernel)
-              │   ├─ Tool belt            (v0 observe-only web search; calculator/health/clock/RAG stubs)
+              │   ├─ Tool belt            (v0 observe-only web search + local calculator/clock; health/RAG stubs)
               │   ├─ Responder          (rule-based local fallback; hosted LLM when configured)
               │   └─ Memory Manager     (conversation history + consented draft knowledge)
               │
@@ -211,12 +220,12 @@ Copy `.env.example` to `.env` and configure:
 poetry run pytest -v
 ```
 
-`tests/test_emotion.py`, `tests/test_spiral_evolution.py`, and
-`tests/test_deliberation.py` cover the v0 heuristics: keyword labels, optional
+`tests/test_emotion.py`, `tests/test_spiral_evolution.py`,
+`tests/test_deliberation.py`, `tests/test_web_search.py`, and
+`tests/test_calculator_clock.py` cover the v0 heuristics: keyword labels, optional
 biofeedback stress, bounded increments, intent-mode gates, the deterministic
-energy phase signal, and DOS-lite hard rules (Infer-without-Challenge blocked,
-Commit without evidence blocked, recorded waivers, external suggestions as
-evidence-only, happy-path Commit with evidence).
+energy phase signal, DOS-lite hard rules, observe-only search, and local
+calculator/clock (explicit invocation, fail-closed invalid math, no auto memory).
 
 ## Connecting to Spiral Intelligence
 
