@@ -928,6 +928,37 @@ def apply_coverage_gate(
     return resolution, extra, response_commit, memory_admission
 
 
+def _sanitize_unverified_factual_reply(reply: str, claims: list[ClaimRecord]) -> str:
+    # If any FACTUAL reply claim is unsupported, strip assertive frames and numeric assertions.
+    has_unsupported_fact = any(
+        c.claim_id.startswith("claim-reply")
+        and c.claim_class is ClaimClass.FACTUAL
+        and c.support in {ClaimSupport.MISSING, ClaimSupport.WEAK}
+        for c in claims
+    )
+    if not has_unsupported_fact:
+        return reply
+    text = reply.strip()
+    # Strip assertive openers at start of sentence
+    assertive_openers = r"^(actually|in fact|the real number is|correct is|to be precise)[,\s]*"
+    text = re.sub(assertive_openers, "", text, flags=re.IGNORECASE)
+    # If numeric quantity asserted without evidence, rewrite to non-committing
+    if re.search(r"\b\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b", text, flags=re.IGNORECASE):
+        # Replace first numeric quantity phrase with hedged placeholder
+        text = re.sub(
+            r"(\b\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b)",
+            "an unverified figure",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        # If still assertive, prepend hedge
+        if not text.lower().startswith("i don't have"):
+            text = "I don't have a cited figure for that this turn. " + text
+    # Ensure not starting with assertive frame again
+    text = re.sub(assertive_openers, "", text, flags=re.IGNORECASE).strip()
+    return text
+
 def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list[ClaimRecord]) -> str:
     match resolution:
         case (
@@ -941,10 +972,12 @@ def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list
         case ChallengeAction.ABSTAIN:
             return challenge_reply(ChallengeAction.ABSTAIN) or reply
         case ChallengeAction.QUALIFY:
-            return _clip_reply(reply, QUALIFY_NOTE)
+            sanitized = _sanitize_unverified_factual_reply(reply, claims)
+            return _clip_reply(sanitized, QUALIFY_NOTE)
         case ChallengeAction.REVISE:
             hedged = _hedge_substantive(reply, claims)
-            return _clip_reply(hedged, QUALIFY_NOTE)
+            sanitized = _sanitize_unverified_factual_reply(hedged, claims)
+            return _clip_reply(sanitized, QUALIFY_NOTE)
         case ChallengeAction.BLOCK:
             return BLOCK_REPLY
         case _:
