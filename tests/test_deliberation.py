@@ -10,7 +10,6 @@ from jarvis.brain.deliberation import (
     BLOCK_REPLY,
     DOS_LITE_LABEL,
     DOS_LITE_VERSION,
-    QUALIFY_NOTE,
     ChallengeAction,
     ClaimTag,
     DeliberationBlocked,

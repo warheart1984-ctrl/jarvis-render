@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from jarvis.brain.context import build_chat_context
 from jarvis.brain.deliberation import (
     BLOCK_REPLY,
-    QUALIFY_NOTE,
     ChallengeAction,
     DeliberationBlocked,
     DeliberationRunner,

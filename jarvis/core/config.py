@@ -148,6 +148,17 @@ class JarvisSettings(BaseSettings):
     search_rate_limit: int = Field(default=8, ge=1, le=60)
     search_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
 
+    # Observe-only Continuity Ledger recall (recall-before-invention). Runs when a
+    # ledger client is configured; empty client degrades, never fail-closes. Never writes.
+    ledger_recall_enabled: bool = True
+    ledger_recall_max_memories: int = Field(default=8, ge=1, le=32)
+    ledger_recall_timeout_seconds: float = Field(default=8.0, ge=1, le=30)
+    ledger_recall_attempts: int = Field(default=2, ge=1, le=2)
+    ledger_recall_max_excerpt_chars: int = Field(default=240, ge=40, le=240)
+    ledger_recall_intent: str = "transform"
+    ledger_recall_rate_limit: int = Field(default=8, ge=1, le=60)
+    ledger_recall_rate_window_seconds: int = Field(default=60, ge=10, le=3600)
+
     @field_validator("search_base_url")
     @classmethod
     def validate_search_endpoint(cls, value: str) -> str:

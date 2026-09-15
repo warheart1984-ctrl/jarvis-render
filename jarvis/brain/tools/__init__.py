@@ -1,4 +1,4 @@
-"""v0 tool kit. Only observe-only web search is implemented."""
+"""v0 tool kit. Only observe-only web search and ledger recall are implemented."""
 
 from jarvis.brain.tools.envelope import (
     STUB_TOOLS,
@@ -11,6 +11,17 @@ from jarvis.brain.tools.envelope import (
     stub_tool_call,
     validate_tool_arguments,
 )
+from jarvis.brain.tools.ledger_recall import (
+    FakeLedgerRecallBackend,
+    LedgerRecallOutcome,
+    LedgerRecallUnavailable,
+    evidence_from_recall_item,
+    maybe_ledger_recall,
+    quoted_recall_payload,
+    recall_citation,
+    resolve_recall_query,
+    run_ledger_recall,
+)
 from jarvis.brain.tools.search import (
     FakeSearchBackend,
     evidence_from_search_hit,
@@ -22,19 +33,28 @@ from jarvis.brain.tools.search import (
 )
 
 __all__ = [
+    "FakeLedgerRecallBackend",
     "FakeSearchBackend",
+    "LedgerRecallOutcome",
+    "LedgerRecallUnavailable",
     "STUB_TOOLS",
     "SourceReceipt",
     "ToolCallRecord",
     "ToolCallStatus",
     "ToolName",
+    "evidence_from_recall_item",
     "evidence_from_search_hit",
     "invoke_tool",
+    "maybe_ledger_recall",
     "maybe_web_search",
     "fence_untrusted_data",
     "may_admit_retrieved_to_memory",
+    "quoted_recall_payload",
     "quoted_search_payload",
+    "recall_citation",
+    "resolve_recall_query",
     "resolve_search_query",
+    "run_ledger_recall",
     "search_citation",
     "stub_tool_call",
     "validate_tool_arguments",

@@ -80,11 +80,24 @@ class ContinuityLedgerClient:
             ).model_dump()
         return self._normalize_write_result(data, transaction_id=transaction_id, correlation_id=correlation_id)
 
-    async def recall(self, session_id: str, query: str, intent: str = "transform") -> dict[str, Any]:
+    async def recall(
+        self,
+        session_id: str,
+        query: str,
+        intent: str = "transform",
+        *,
+        max_memories: int | None = None,
+        session_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"intent": intent, "query": query}
+        if max_memories is not None:
+            payload["max_memories"] = max_memories
+        if session_key:
+            payload["session_key"] = session_key[:128]
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/jarvis/tools/emr_recall",
-                json={"intent": intent, "query": query},
+                json=payload,
                 headers=self.headers,
             )
             response.raise_for_status()

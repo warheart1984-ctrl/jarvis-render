@@ -32,6 +32,7 @@ from jarvis.brain.tools.envelope import (
     utc_now,
     validate_tool_arguments,
 )
+from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.governance.hashing import content_hash
 
@@ -391,6 +392,30 @@ async def invoke_tool(
                 correlation_id=correlation_id,
                 quota=lambda *_args: True,
             )
+        case ToolName.LEDGER_RECALL:
+            from jarvis.brain.tools.ledger_recall import (
+                HttpLedgerRecallBackend,
+                UnavailableLedgerRecallBackend,
+                run_ledger_recall,
+            )
+
+            client = (
+                ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token, timeout=4.0)
+                if settings.continuity_ledger_url
+                else None
+            )
+            backend = HttpLedgerRecallBackend(client) if client is not None else UnavailableLedgerRecallBackend()
+            outcome = await run_ledger_recall(
+                query=str(validated.get("query") or ""),
+                session_id="",
+                tenant_id="",
+                owner_sub="",
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                quota=lambda *_args: True,
+                backend=backend,
+            )
+            return outcome.record
         case (
             ToolName.CALCULATOR
             | ToolName.CLOCK

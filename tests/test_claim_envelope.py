@@ -135,7 +135,8 @@ def test_support_ref_from_evidence_ref_hashes_digest() -> None:
 
 
 def test_envelope_from_claim_present_support_is_proven_admitted() -> None:
-    envelope = envelope_from_claim(_claim(evidence_ids=["e1"], support=ClaimSupport.PRESENT), evidence=[_evidence("e1")])
+    claim = _claim(evidence_ids=["e1"], support=ClaimSupport.PRESENT)
+    envelope = envelope_from_claim(claim, evidence=[_evidence("e1")])
     assert envelope.trust is TrustPosture.PROVEN
     assert envelope.aris is ArisState.ADMITTED
     assert envelope.grounded()
