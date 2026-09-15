@@ -292,8 +292,9 @@ class JarvisEngine:
                     record.to_public_dict(),
                     turn_id=turn_id,
                 )
-                for hit in search_record.sources:
-                    runner.add_evidence(evidence_from_search_hit(hit))
+                if record is search_record and search_record is not None:
+                    for hit in search_record.sources:
+                        runner.add_evidence(evidence_from_search_hit(hit))
             # Observe-only Continuity recall before invention. No writes; degrades
             # on ledger unavailability; never fail-closed. Evidence is MEMORY-kind.
             recall_outcome = await maybe_ledger_recall(
@@ -318,7 +319,7 @@ class JarvisEngine:
                 )
                 for item in recall_outcome.evidence:
                     runner.add_evidence(item)
-                for evidence in evidence_from_tool_record(record):
+                for evidence in evidence_from_tool_record(recall_outcome.record):
                     runner.add_evidence(evidence)
             runner.observe(
                 message=request.message,
@@ -490,7 +491,6 @@ class JarvisEngine:
                 if isinstance(iso, str) and len(iso) >= 8:
                     snippets.append(iso)
             public_tool_calls = [record.to_public_dict() for record in tool_records]
-            snippets = [hit.excerpt for hit in search_record.sources] if search_record else []
             admit_user_grounded = (
                 request.memory_consent
                 and decision == "answer"
@@ -577,15 +577,6 @@ class JarvisEngine:
             turn.model = llm_result.model if llm_result else "bounded-local"
             turn.cost_usd = llm_result.cost_usd if llm_result else 0.0
             turn.backend_status = backend_status
-            # Tool records combined in call order: ledger recall, then web search.
-            tool_calls_payload = [
-                record.to_public_dict()
-                for record in (
-                    recall_outcome.record if recall_outcome is not None else None,
-                    search_record,
-                )
-                if record is not None
-            ]
             prior_turn_ids = [
                 message.get("turn_id")
                 for message in state.conversation_history[:-2]
@@ -608,7 +599,7 @@ class JarvisEngine:
                 observe={
                     "required": search_record is not None or recall_outcome is not None,
                     "thin": False,
-                    "records": tool_calls_payload,
+                    "records": public_tool_calls,
                 },
                 context_receipt=receipt,
                 previous_turn_id=prior_turn_ids[-1] if prior_turn_ids else None,
@@ -640,9 +631,7 @@ class JarvisEngine:
                         "runtime_context": runtime_context,
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
                         "deliberation": public_deliberation,
-                        "tool_calls": tool_calls_payload,
                         "tool_calls": public_tool_calls,
-                        "tool_calls": [search_record.to_public_dict()] if search_record else [],
                         "cer": cer,
                         "backend_status": backend_status,
                         "external_suggestions": [
@@ -742,7 +731,6 @@ class JarvisEngine:
                 previous_session=runtime_context["previous_session"],
                 context_receipt=receipt,
                 lock_reason=self.lock_reason(state.session_id),
-                tool_calls=tool_calls_payload,
                 tool_calls=public_tool_calls,
                 deliberation=public_deliberation,
                 cer=cer,

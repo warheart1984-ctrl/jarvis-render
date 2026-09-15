@@ -176,6 +176,7 @@ def build_chat_context(
         "ledger_recall_status": recall_status,
         "ledger_recall_memories_in_context": (
             len(recall_quotes.get("items", [])) if isinstance(recall_quotes, dict) else len(recall_quotes or [])
+        ),
         "local_tools_observe_only": True,
         "calculator_status": calculator_status,
         "clock_status": clock_status,
