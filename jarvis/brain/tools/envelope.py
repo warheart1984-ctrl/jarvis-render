@@ -33,6 +33,7 @@ _MATH_CHARS = re.compile(r"^[\d\s+\-*/().%eE]+$")
 class ToolName(str, Enum):
     WEB_SEARCH = "web_search"
     LEDGER_RECALL = "ledger_recall"
+    NX_SEARCH = "nx_search"
     CALCULATOR = "calculator"
     CLOCK = "clock"
     WEATHER = "weather"
@@ -257,6 +258,11 @@ def validate_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) ->
                     raise ValueError("ledger_recall max_memories must be 1..32")
                 validated["max_memories"] = count
             return validated
+        case ToolName.NX_SEARCH:
+            query = str(args.get("query") or "").strip()
+            if not query or len(query) > _QUERY_LIMIT:
+                raise ValueError("nx_search requires a query of 1..500 characters")
+            return {"query": query[:_QUERY_LIMIT]}
         case (
             ToolName.CALCULATOR
             | ToolName.CLOCK
@@ -292,7 +298,7 @@ def stub_tool_call(
     attempts: int = 1,
 ) -> ToolCallRecord:
     match name:
-        case ToolName.WEB_SEARCH | ToolName.LEDGER_RECALL:
+        case ToolName.WEB_SEARCH | ToolName.LEDGER_RECALL | ToolName.NX_SEARCH:
             raise ValueError(f"{name.value} is implemented; do not stub it")
         case (
             ToolName.CALCULATOR
