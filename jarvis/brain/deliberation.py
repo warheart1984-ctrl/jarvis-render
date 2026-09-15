@@ -196,6 +196,16 @@ _CONVERSATIONAL_HINTS = (
     "let's go",
     "i'm here",
     "ready when you are",
+    "how's your day",
+    "how are you",
+    "what do you think",
+    "do you like",
+    "what can you do",
+    "thanks",
+    "hello",
+    "hi ",
+    "how do you",
+    "what do you",
 )
 _CAUSAL_HINTS = (
     "this provides",
@@ -597,7 +607,14 @@ def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
 
     if claim_id in {"claim-hypothesized-emotion", "claim-hypothesized-intent"}:
         return ClaimClass.INTERPRETIVE
-    if claim_id in {"claim-observed-utterance", "claim-specified-request", "claim-observed-memory"}:
+    if claim_id == "claim-observed-utterance":
+        return ClaimClass.CONVERSATIONAL
+    if claim_id == "claim-specified-request":
+        lower = text.lower()
+        if "treat as given" in lower or "treat this as given" in lower:
+            return ClaimClass.INTERPRETIVE
+        return ClaimClass.CONVERSATIONAL
+    if claim_id == "claim-observed-memory":
         return ClaimClass.FACTUAL
     lower = text.lower()
     if any(hint in lower for hint in _SAFETY_CRITICAL_HINTS):
