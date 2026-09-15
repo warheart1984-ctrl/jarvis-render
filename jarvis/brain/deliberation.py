@@ -481,10 +481,12 @@ def choose_challenge_action(
         if item.kind is not EvidenceKind.HYPOTHESIZED_NONE and item.evidence_id != "hist-current-utterance"
     ]
     lower = message.lower()
+    # Scan only short intent for clarify triggers to avoid poison by buried hints in long pastes
+    scan = message[:240].lower()
     if not supported and any(hint in lower for hint in _FACTUAL_HINTS):
         reasons.append("factual ask without non-hypothesized evidence")
         return ChallengeAction.REQUIRE_EVIDENCE, reasons
-    if confidence < 0.45 or any(hint in lower for hint in _CLARIFY_HINTS):
+    if confidence < 0.45 or any(hint in scan for hint in _CLARIFY_HINTS):
         reasons.append("ambiguous or low-confidence request; clarification warranted")
         return ChallengeAction.CLARIFY, reasons
     if not supported:
@@ -611,7 +613,17 @@ def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
         return ClaimClass.CONVERSATIONAL
     if claim_id == "claim-specified-request":
         lower = text.lower()
-        if "treat as given" in lower or "treat this as given" in lower:
+        treat_phrases = (
+            "treat as given",
+            "treat this as given",
+            "treat that as given",
+            "treat that as fact",
+            "treat this as fact",
+            "treat as fact",
+            "take that as given",
+            "commit when you confirm",
+        )
+        if any(p in lower for p in treat_phrases):
             return ClaimClass.INTERPRETIVE
         return ClaimClass.CONVERSATIONAL
     if claim_id == "claim-observed-memory":
