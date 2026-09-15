@@ -384,10 +384,13 @@ async def test_gated_search_query_invokes_search(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_calculator_and_other_kit_tools_are_stubs() -> None:
-    record = await invoke_tool("calculator", {"expression": "1+1"}, transaction_id="t", correlation_id="c")
+async def test_weather_and_unknown_kit_tools_are_not_calculator() -> None:
+    record = await invoke_tool("weather", {"query": "x"}, transaction_id="t", correlation_id="c")
     assert record.status is ToolCallStatus.NOT_IMPLEMENTED
-    assert record.tool_name == ToolName.CALCULATOR.value
+    assert record.tool_name == ToolName.WEATHER.value
+    calc = await invoke_tool("calculator", {"expression": "1+1"}, transaction_id="t", correlation_id="c")
+    assert calc.status is ToolCallStatus.ACCEPTED
+    assert calc.result["value"] == 2
     unknown = await invoke_tool("shell", {}, transaction_id="t", correlation_id="c")
     assert unknown.status is ToolCallStatus.INVALID
 
@@ -720,4 +723,3 @@ async def test_max_results_bound(tmp_path, monkeypatch) -> None:
         hits=hits,
     )
     assert len(response.tool_calls[0]["sources"]) <= 3
-
