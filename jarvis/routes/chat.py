@@ -13,6 +13,12 @@ from jarvis.brain.engine import JarvisEngine
 from jarvis.brain.evolution import EvolutionEngine
 from jarvis.brain.inspection import inspect_session
 from jarvis.brain.llm import ProviderError
+from jarvis.brain.tools.memory_promotion import (
+    apply_promotion,
+    build_proposal,
+    check_gate,
+    render_preview,
+)
 from jarvis.core.config import settings
 from jarvis.models.jarvis_types import ChatRequest, ChatResponse
 from jarvis.oauth import WRITE_SCOPE
@@ -45,6 +51,91 @@ class MemorySupersession(BaseModel):
     user_id: str = Field(min_length=1)
     content: str = Field(min_length=1)
     user_requested: bool = False
+
+
+class MemoryPromotionRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    memory_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    user_requested: bool = False
+    supersedes_ledger_id: str | None = Field(default=None, max_length=64)
+
+
+@router.post("/memory/promote/preview")
+async def preview_memory_promotion(
+    request: MemoryPromotionRequest, http_request: Request
+) -> dict[str, Any]:
+    """Read-only OTEM-lite preview. NEVER writes to the Continuity Ledger."""
+
+    principal = visitor(http_request)
+    active = owned_engine(http_request, request.session_id)
+    if principal:
+        request = request.model_copy(update={"user_id": principal.user_id})
+    state = active.get_session(request.session_id)
+    if state is None or state.user_id != request.user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    memory = next((m for m in state.long_term_memory if m.memory_id == request.memory_id), None)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    proposal = build_proposal(
+        state,
+        memory,
+        user_requested=request.user_requested,
+        supersedes_ledger_id=request.supersedes_ledger_id,
+    )
+    gate = check_gate(
+        continuity_configured=active.continuity is not None,
+        read_only=active.is_read_only(request.session_id),
+        already_reconciled=bool(memory.metadata.get("continuity_ledger_id")),
+    )
+    return render_preview(proposal, gate)
+
+
+@router.post("/memory/promote")
+async def promote_memory(request: MemoryPromotionRequest, http_request: Request) -> dict[str, Any]:
+    """OTEM-lite governed promotion: explicit user request → EMR gate → apply to Continuity."""
+
+    principal = guard_visitor_mutation(http_request)
+    if principal and WRITE_SCOPE not in principal.scopes:
+        raise HTTPException(status_code=403, detail="memory.write is required for ledger storage")
+    if not settings.governed_writes_allowed():
+        raise HTTPException(status_code=403, detail="Governed writes disabled; production EMR gates are not enabled")
+    if not request.user_requested:
+        raise HTTPException(status_code=400, detail="Explicit user_requested=true is required")
+    bind_user(http_request, request.user_id)
+    active = owned_engine(http_request, request.session_id)
+    if active.continuity is None:
+        raise HTTPException(status_code=503, detail="Continuity Ledger is not configured")
+    state = active.get_session(request.session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if state.user_id != request.user_id and not principal:
+        raise HTTPException(status_code=403, detail="Session ownership check failed")
+    if principal:
+        request = request.model_copy(update={"user_id": principal.user_id})
+        if state.user_id != principal.user_id:
+            raise HTTPException(status_code=404, detail="Session not found")
+    memory = next((m for m in state.long_term_memory if m.memory_id == request.memory_id), None)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    proposal = build_proposal(
+        state,
+        memory,
+        user_requested=True,
+        supersedes_ledger_id=request.supersedes_ledger_id,
+    )
+    result = await apply_promotion(active, state, proposal)
+    if result.get("status") == "refused":
+        reasons = result.get("reasons", [])
+        if "ledger_unavailable" in reasons or "continuity_exception" in reasons:
+            raise HTTPException(status_code=503, detail="Continuity Ledger unavailable; durable storage not confirmed")
+        if "verify_failed" in reasons:
+            raise HTTPException(status_code=503, detail="Ledger accepted write but retrieval verification failed")
+        if any(r in reasons for r in ("verify_mismatch", "unconfirmed_write", "unconfirmed_supersession")):
+            raise HTTPException(status_code=502, detail="Continuity Ledger returned an unconfirmed write result")
+        if "memory_not_found" in reasons or "not_reconciled" in reasons:
+            raise HTTPException(status_code=409, detail="Memory is not promotable to the Continuity Ledger")
+    return result
 
 
 @router.post("/memory/propose")
