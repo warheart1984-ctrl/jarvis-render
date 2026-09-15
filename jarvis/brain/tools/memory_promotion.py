@@ -134,6 +134,35 @@ def assert_promotable_provenance(
             raise ValueError("Memory appears tool-sourced; promotion refused")
 
 
+def assert_promotable_trust(envelope: Any) -> None:
+    """Refuse promotion when Trust Bundle posture is REJECTED or unproven FACTUAL/CAUSAL."""
+    # Accept dict or ClaimEnvelope-like object
+    trust = None
+    claim_class = None
+    if isinstance(envelope, dict):
+        trust = envelope.get("trust_posture") or envelope.get("trust")
+        claim_class = (envelope.get("claim_class") or "").lower()
+    else:
+        # assume object with attributes
+        trust = getattr(envelope, "trust_posture", None)
+        claim_class = getattr(envelope, "claim_class", None)
+        if isinstance(claim_class, str):
+            claim_class = claim_class.lower()
+    if trust is None:
+        # Nothing to enforce
+        return
+    # Normalize
+    trust_str = str(trust).lower()
+    if trust_str == "rejected":
+        raise ValueError("Promotion refused: TrustPosture REJECTED")
+    if claim_class in {"factual", "causal"}:
+        if trust_str not in {"proven"}:
+            raise ValueError(f"Promotion refused: FACTUAL/CAUSAL requires TrustPosture PROVEN, got {trust_str}")
+    # ASSERTED without proven support is refused for promote/apply
+    if trust_str == "asserted":
+        raise ValueError("Promotion refused: TrustPosture ASSERTED without proven support")
+
+
 def build_proposal(
     state: JarvisState,
     memory: JarvisMemoryEntry,
@@ -141,6 +170,7 @@ def build_proposal(
     evidence: list[dict[str, str]] | None = None,
     user_requested: bool = False,
     supersedes_ledger_id: str | None = None,
+    claim_envelope: Any | None = None,
 ) -> MemoryPromotionProposal:
     """Build a promotion proposal from a local draft memory.
 
@@ -149,6 +179,8 @@ def build_proposal(
     """
 
     assert_promotable_provenance(memory, evidence=evidence)
+    if claim_envelope is not None:
+        assert_promotable_trust(claim_envelope)
 
     content = (memory.content or "").strip()
     if len(content) > 2000:

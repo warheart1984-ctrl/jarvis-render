@@ -963,21 +963,31 @@ def _sanitize_unverified_factual_reply(reply: str, claims: list[ClaimRecord]) ->
     # Strip assertive openers at start of sentence
     assertive_openers = r"^(actually|in fact|the real number is|correct is|to be precise)[,\s]*"
     text = re.sub(assertive_openers, "", text, flags=re.IGNORECASE)
-    # If numeric quantity asserted without evidence, rewrite to non-committing
-    if re.search(r"\b\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b", text, flags=re.IGNORECASE):
-        # Replace first numeric quantity phrase with hedged placeholder
+    # Rewrite quantity clauses to hedge
+    qty_clause_pat = r"\b(?:has|is|about|around|approximately|roughly)\s+\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b[^\.,;]*"
+    if re.search(qty_clause_pat, text, flags=re.IGNORECASE):
+        # Replace whole clause with hedge
+        text = re.sub(qty_clause_pat, "a figure I cannot cite this turn", text, count=1, flags=re.IGNORECASE)
+        text = "I don't have a cited figure for that this turn. " + text
+    elif re.search(r"\b\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b", text, flags=re.IGNORECASE):
+        # Fallback: replace numeric quantity
         text = re.sub(
             r"(\b\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b)",
-            "an unverified figure",
+            "a figure I cannot cite this turn",
             text,
             count=1,
             flags=re.IGNORECASE,
         )
-        # If still assertive, prepend hedge
         if not text.lower().startswith("i don't have"):
             text = "I don't have a cited figure for that this turn. " + text
+    # Strip orphan year tags next to removed numbers
+    text = re.sub(r"\s*,?\s+as of \d{4}\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*,?\s+in \d{4}\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(\d{4}\)", "", text)
     # Ensure not starting with assertive frame again
     text = re.sub(assertive_openers, "", text, flags=re.IGNORECASE).strip()
+    # Clean up duplicate spaces
+    text = re.sub(r"\s+", " ", text)
     return text
 
 def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list[ClaimRecord]) -> str:
@@ -1002,11 +1012,23 @@ def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list
             return challenge_reply(ChallengeAction.ABSTAIN) or reply
         case ChallengeAction.QUALIFY:
             sanitized = _sanitize_unverified_factual_reply(reply, claims)
-            return _clip_reply(sanitized, QUALIFY_NOTE)
+            needs_note = any(
+                c.claim_id.startswith("claim-reply")
+                and c.claim_class in {ClaimClass.FACTUAL, ClaimClass.CAUSAL}
+                and c.support in {ClaimSupport.MISSING, ClaimSupport.WEAK}
+                for c in claims
+            )
+            return _clip_reply(sanitized, QUALIFY_NOTE) if needs_note else sanitized
         case ChallengeAction.REVISE:
             hedged = _hedge_substantive(reply, claims)
             sanitized = _sanitize_unverified_factual_reply(hedged, claims)
-            return _clip_reply(sanitized, QUALIFY_NOTE)
+            needs_note = any(
+                c.claim_id.startswith("claim-reply")
+                and c.claim_class in {ClaimClass.FACTUAL, ClaimClass.CAUSAL}
+                and c.support in {ClaimSupport.MISSING, ClaimSupport.WEAK}
+                for c in claims
+            )
+            return _clip_reply(sanitized, QUALIFY_NOTE) if needs_note else sanitized
         case ChallengeAction.BLOCK:
             return BLOCK_REPLY
         case _:
