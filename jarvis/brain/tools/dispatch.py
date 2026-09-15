@@ -15,6 +15,7 @@ from jarvis.brain.tools.envelope import (
     stub_tool_call,
     validate_tool_arguments,
 )
+from jarvis.brain.tools.nx_search import evidence_from_nx_receipt
 from jarvis.brain.tools.search import evidence_from_search_hit, run_web_search, search_citation
 from jarvis.core.config import settings
 
@@ -85,6 +86,8 @@ def evidence_from_tool_record(record: ToolCallRecord) -> list[EvidenceRef]:
     if record.tool_name == ToolName.CLOCK.value:
         item = evidence_from_clock(record)
         return [item] if item else []
+    if record.tool_name == ToolName.NX_SEARCH.value:
+        return [evidence_from_nx_receipt(hit) for hit in record.sources]
     return []
 
 

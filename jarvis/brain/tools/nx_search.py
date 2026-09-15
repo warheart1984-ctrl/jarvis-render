@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from typing import Any, Protocol
 
+from jarvis.brain.deliberation import admit_external_suggestion
 from jarvis.brain.tools.envelope import SourceReceipt, ToolCallRecord, ToolCallStatus, utc_now
 from jarvis.core.config import settings
 
@@ -74,6 +76,58 @@ def _make_receipt(item: dict[str, Any]) -> SourceReceipt:
         retrieved_at=utc_now(),
         excerpt=excerpt[:240],
         content_hash=content_hash,
+    )
+
+
+def evidence_from_nx_receipt(receipt: SourceReceipt):
+    """Admit nx hit as TOOL_LOCAL evidence. Authority always false."""
+    return admit_external_suggestion(
+        source="nx_search",
+        summary=f"{receipt.source_id}: {receipt.excerpt}",
+        evidence_id=receipt.source_id,
+        requested_authority=False,
+        match_text=receipt.excerpt,
+        citation_id=receipt.source_id,
+    )
+
+
+_LOCAL_PATTERNS = (
+    re.compile(r"(?i)\b(?:find|locate|search)\s+file"),
+    re.compile(r"(?i)\bin the repo\b"),
+    re.compile(r"(?i)\b(?:in|from)\s+the\s+project\b"),
+    re.compile(r"[A-Za-z]:\\"),
+    re.compile(r"[/\\][A-Za-z0-9_.-]+[/\\]"),
+    re.compile(r"(?i)\bfile\s+path\b"),
+    re.compile(r"(?i)\bpath\s*[:=]\s*"),
+)
+
+
+def _looks_local(message: str) -> bool:
+    if not message:
+        return False
+    for pat in _LOCAL_PATTERNS:
+        if pat.search(message):
+            return True
+    return False
+
+
+def maybe_nx_search(
+    message: str,
+    *,
+    transaction_id: str,
+    correlation_id: str,
+    backend: NxSearchBackend | None = None,
+) -> ToolCallRecord | None:
+    if not settings.observe_tools_enabled:
+        return None
+    if not _looks_local(message):
+        return None
+    query = message[:500]
+    return run_nx_search(
+        query,
+        backend=backend,
+        transaction_id=transaction_id,
+        correlation_id=correlation_id,
     )
 
 
