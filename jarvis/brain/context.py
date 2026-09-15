@@ -148,6 +148,8 @@ def build_chat_context(
         "continuity_adapter_configured": continuity_configured,
         "external_backend_connectivity": "not_verified_by_this_context",
         "infinity_result_used_in_reply": False,
+        "external_suggestions_are_authority": False,
+        "observe_citations_in_context": len(search_citations or []),
         "previous_session": previous.metadata,
         "web_search_observe_only": True,
         "web_search_status": search_status,

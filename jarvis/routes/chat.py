@@ -183,25 +183,16 @@ async def supersede_memory(
             "lock_reason": (reason.value if (reason := engine.lock_reason(request.session_id)) else None),
             "ledger": result,
         }
-    replacement = result.get("memory") or result.get("replacement") or {}
-    lineage = result.get("lineage") or replacement.get("lineage") or {}
-    if result.get("accepted") is not True or not replacement.get("id"):
-        raise HTTPException(status_code=502, detail="Supersession was not confirmed by the Continuity Ledger")
-    if replacement.get("id") == ledger_memory_id or (lineage.get("supersedes") not in {None, ledger_memory_id}):
-        raise HTTPException(status_code=502, detail="Continuity Ledger returned invalid supersession lineage")
-    engine.audit.append(
-        f"supersede-{request.memory_id}",
-        request.session_id,
-        "memory_supersession",
-        {
-            "memory_id": request.memory_id,
-            "ledger_memory_id": ledger_memory_id,
-            "subject": "jarvis-prototype",
-            "content_sha256": engine.store.content_hash(request.content),
-        },
-    )
-    engine.authorize_session(request.session_id)
-    return {"status": "superseded", "read_only": False, "ledger": result}
+    try:
+        applied = engine.apply_supersession(
+            state,
+            memory_id=request.memory_id,
+            content=request.content,
+            ledger_result=result,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {**applied, "ledger": result}
 
 
 @router.post("/chat", response_model=ChatResponse)

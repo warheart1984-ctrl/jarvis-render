@@ -191,6 +191,13 @@ class JarvisStore(ScopedLedger):
                 ),
             )
 
+    def set_memory_status(self, session_id: str, memory_id: str, status: str) -> None:
+        with sqlite3.connect(self.path) as db:
+            db.execute(
+                "UPDATE memories SET status=? WHERE id=? AND session_id=? AND tenant_id=? AND owner_sub=?",
+                (status, memory_id, session_id, *self.scope),
+            )
+
     def recall_memories(self, session_id: str, query: str = "") -> list[dict[str, Any]]:
         with sqlite3.connect(self.path) as db:
             db.row_factory = sqlite3.Row

@@ -16,3 +16,4 @@ dist/
 *.sqlite3-*
 .test-tools/
 .test-runs/
+test_summary.txt

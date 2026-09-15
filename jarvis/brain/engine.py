@@ -16,6 +16,7 @@ from jarvis.brain.deliberation import (
     ChallengeAction,
     DeliberationBlocked,
     DeliberationRunner,
+    admit_external_suggestion,
     challenge_reply,
     evidence_from_citation,
     map_challenge_decision,
@@ -41,9 +42,14 @@ from jarvis.brain.tools import (
 )
 from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
+from jarvis.governance.adapters import policy_context_from_state
+from jarvis.governance.lanes import evaluate_policies
+from jarvis.governance.outcomes import outcomes_from_policy
+from jarvis.governance.schemas import ContinuityAuthStatus
 from jarvis.models.jarvis_types import (
     ChatRequest,
     ChatResponse,
+    JarvisMemoryEntry,
     JarvisState,
     SessionLockReason,
     SpiralTurn,
@@ -471,8 +477,9 @@ class JarvisEngine:
                 content=reply,
                 content_sha256=hashlib.sha256(reply.encode()).hexdigest(),
             )
-            # --- 6. EVOLVE (sync with Spiral backend if available) ---
+            # --- 6. EVOLVE (Project Infinity bounded engine when governed writes allow) ---
             backend_status = "skipped_read_only"
+            evolve_payload = None
             if decision == "answer" and request.memory_consent:
                 backend_status = "skipped_writes_disabled"
                 if (
@@ -480,7 +487,24 @@ class JarvisEngine:
                     and runner.memory_admission == "eligible"
                     and not snippets
                 ):
-                    backend_status = await self._sync_with_spiral(state, request.message, reply)
+                    backend_status, evolve_payload = await self._sync_with_spiral(
+                        state, request.message, reply
+                    )
+            if evolve_payload is not None:
+                admitted = admit_external_suggestion(
+                    source="project_infinity",
+                    summary=str(evolve_payload)[:500],
+                    match_text=str(evolve_payload.get("best") or evolve_payload.get("result") or ""),
+                )
+                turn.evidence.append(
+                    {
+                        "type": "external_suggestion",
+                        "source": admitted.source,
+                        "authority": False,
+                        "summary": admitted.summary,
+                        "evidence_id": admitted.evidence_id,
+                    }
+                )
             turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
             turn.model = llm_result.model if llm_result else "bounded-local"
@@ -542,6 +566,16 @@ class JarvisEngine:
                         "deliberation": public_deliberation,
                         "tool_calls": [search_record.to_public_dict()] if search_record else [],
                         "cer": cer,
+                        "backend_status": backend_status,
+                        "external_suggestions": [
+                            {
+                                "source": "project_infinity",
+                                "authority": False,
+                                "summary": str(evolve_payload)[:500],
+                            }
+                        ]
+                        if evolve_payload is not None
+                        else [],
                     },
                 },
                 {
@@ -560,6 +594,16 @@ class JarvisEngine:
             )
 
             audit_event = self.audit.list(state.session_id)[-1]
+            self._record_governance_outcomes(
+                state,
+                turn_id=turn_id,
+                decision=decision,
+                uncertainty=uncertainty,
+                stress=emotion.stress,
+                event_hash=audit_event["event_hash"],
+                provider_identity_available=bool(llm_result)
+                or settings.llm_provider.lower() in {"", "mock", "local"},
+            )
             self.reviver.save(
                 checkpoint_id=f"checkpoint-{turn_id}",
                 session_id=state.session_id,
@@ -697,6 +741,132 @@ class JarvisEngine:
         if self._read_only_reasons.get(session_id) is SessionLockReason.CONFLICT:
             self._read_only_reasons.pop(session_id, None)
 
+    def apply_supersession(
+        self,
+        state: JarvisState,
+        *,
+        memory_id: str,
+        content: str,
+        ledger_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Archive the old claim, write replacement lineage, audit, then unlock conflict locks."""
+
+        memory = next((item for item in state.long_term_memory if item.memory_id == memory_id), None)
+        if memory is None:
+            raise ValueError("Memory not found")
+        ledger_memory_id = memory.metadata.get("continuity_ledger_id")
+        if not ledger_memory_id:
+            raise ValueError("Memory has not been reconciled to a Continuity Ledger ID")
+        replacement = ledger_result.get("memory") or ledger_result.get("replacement") or {}
+        lineage = ledger_result.get("lineage") or replacement.get("lineage") or {}
+        if ledger_result.get("accepted") is not True or not replacement.get("id"):
+            raise ValueError("Supersession was not confirmed by the Continuity Ledger")
+        if replacement.get("id") == ledger_memory_id or (
+            lineage.get("supersedes") not in {None, ledger_memory_id}
+        ):
+            raise ValueError("Continuity Ledger returned invalid supersession lineage")
+
+        replacement_id = uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        memory.metadata["status"] = "superseded"
+        memory.metadata["superseded_by"] = replacement_id
+        self.store.set_memory_status(state.session_id, memory.memory_id, "superseded")
+
+        replacement_entry = JarvisMemoryEntry(
+            memory_id=replacement_id,
+            user_id=state.user_id,
+            session_id=state.session_id,
+            content=content,
+            category=memory.category,
+            importance=memory.importance,
+            intent_context=memory.intent_context,
+            energy_at_capture=state.energy,
+            created_at=now,
+            metadata={
+                "status": "draft",
+                "continuity_ledger_id": replacement["id"],
+                "supersedes": memory.memory_id,
+                "lineage": dict(lineage),
+            },
+        )
+        state.long_term_memory.append(replacement_entry)
+        self.store.save_memory(
+            {
+                "id": replacement_entry.memory_id,
+                "session_id": state.session_id,
+                "type": replacement_entry.category,
+                "confidence": replacement_entry.importance,
+                "evidence": [{"source": "supersession", "supersedes": memory.memory_id}],
+                "status": "draft",
+                "content": replacement_entry.content,
+                "subject": state.user_id,
+                "created_at": replacement_entry.created_at,
+            }
+        )
+        self.audit.append(
+            f"supersede-{memory.memory_id}",
+            state.session_id,
+            "memory_supersession",
+            {
+                "memory_id": memory.memory_id,
+                "replacement_memory_id": replacement_id,
+                "ledger_memory_id": ledger_memory_id,
+                "replacement_ledger_memory_id": replacement["id"],
+                "subject": state.user_id,
+                "content_sha256": self.store.content_hash(content),
+                "lineage": dict(lineage),
+            },
+        )
+        self._save_session(state)
+        self.authorize_session(state.session_id)
+        return {
+            "status": "superseded",
+            "read_only": self.is_read_only(state.session_id),
+            "memory_id": memory.memory_id,
+            "replacement_memory_id": replacement_id,
+            "ledger": ledger_result,
+        }
+
+    def _record_governance_outcomes(
+        self,
+        state: JarvisState,
+        *,
+        turn_id: str,
+        decision: str,
+        uncertainty: float,
+        stress: float,
+        event_hash: str,
+        provider_identity_available: bool,
+    ) -> None:
+        """Persist observe-only lane results. Never changes this turn's decision."""
+
+        if not settings.governance_outcomes_enabled:
+            return
+        try:
+            context = policy_context_from_state(
+                state,
+                turn_id=turn_id,
+                uncertainty=uncertainty,
+                stress=stress,
+                audit_available=True,
+                continuity_auth=ContinuityAuthStatus.KNOWN,
+                hash_verified=True,
+                provider_identity_available=provider_identity_available,
+                checkpoint_integrity_ok=True,
+                side_effects_requested=False,
+            )
+            policy = evaluate_policies(context)
+            rows = outcomes_from_policy(
+                policy,
+                session_id=state.session_id,
+                turn_id=turn_id,
+                turn_decision=decision,
+                event_hash=event_hash,
+            )
+            self.store.save_governance_outcomes(rows)
+        except Exception:
+            logger.debug("Governance outcome recording skipped", exc_info=True)
+
     def clear_memory(self, session_id: str) -> dict[str, str]:
         state = self.get_session(session_id)
         if state is None:
@@ -714,48 +884,26 @@ class JarvisEngine:
     # Spiral backend sync
     # ------------------------------------------------------------------
 
-    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> str:
-        """Optionally push state to the Spiral Intelligence backend."""
+    async def _sync_with_spiral(self, state: JarvisState, user_message: str, reply: str) -> tuple[str, Any | None]:
+        """Push evolution to Project Infinity's bounded EvolveEngine.
+
+        Spiral V8 chat/memory writes are not the evolution backend. Infinity results
+        are returned for evidence admission only and never revise this reply.
+        """
 
         if not settings.governed_writes_allowed() or self.store.tenant_id != "t_jon":
-            return "skipped_writes_disabled"
+            return "skipped_writes_disabled", None
+        if not self.infinity:
+            return "skipped_no_infinity", None
 
         try:
-            if self.infinity:
-                await self.infinity.evolve(
-                    job_id=f"jarvis-{state.session_id}-{state.turn_count}",
-                    jarvis_run_id=state.session_id,
-                    task=user_message,
-                    initial_candidate=reply,
-                )
-            if not await self.spiral.is_available():
-                return "unavailable"
-
-            await self.spiral.spiral_turn(
-                session_id=state.session_id,
-                prompt=user_message,
-                energy=state.energy,
-                intent=state.intent,
+            evolve_payload = await self.infinity.evolve(
+                job_id=f"jarvis-{state.session_id}-{state.turn_count}",
+                jarvis_run_id=state.session_id,
+                task=user_message,
+                initial_candidate=reply,
             )
-
-            # Push a chat turn to the V1 backend.
-            await self.spiral.spiral_chat(
-                user_id=state.user_id,
-                message=user_message,
-                session_id=state.session_id,
-            )
-
-            # Write a memory entry to the V7 backend.
-            await self.spiral.write_memory(
-                user_id=state.user_id,
-                session_id=state.session_id,
-                label=f"jarvis:{state.intent.value}:{state.turn_count}",
-                energy=state.energy,
-                intent=state.intent,
-                score=state.confidence,
-                notes=f"Jarvis turn {state.turn_count}: {user_message[:100]}",
-            )
-            return "connected"
+            return "connected", evolve_payload
         except Exception as exc:
-            logger.debug("Spiral sync skipped: %s", exc)
-            return "error"
+            logger.debug("Project Infinity evolve skipped: %s", exc)
+            return "error", None
