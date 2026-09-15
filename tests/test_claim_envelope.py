@@ -148,7 +148,8 @@ def test_envelope_from_claim_missing_evidence_stays_asserted_inspiration() -> No
     envelope = envelope_from_claim(
         _claim(evidence_ids=["missing"], support=ClaimSupport.MISSING), evidence=[_evidence("e1")]
     )
-    assert envelope.trust is TrustPosture.ASSERTED
+    # Factual claim without grounded support is REJECTED by groundedness harness
+    assert envelope.trust is TrustPosture.REJECTED
     assert envelope.aris is ArisState.INSPIRATION
     assert not envelope.grounded()
     assert not envelope.may_commit()
@@ -156,7 +157,8 @@ def test_envelope_from_claim_missing_evidence_stays_asserted_inspiration() -> No
 
 def test_envelope_from_claim_absent_support_is_hypothesized_asserted() -> None:
     envelope = envelope_from_claim(_claim(evidence_ids=[], support=ClaimSupport.MISSING), evidence=[])
-    assert envelope.trust is TrustPosture.ASSERTED
+    # Factual claim without support is REJECTED
+    assert envelope.trust is TrustPosture.REJECTED
     assert envelope.aris is ArisState.INSPIRATION
     assert not envelope.may_commit()
 
@@ -170,3 +172,44 @@ def test_may_commit_allows_hypothesized_without_support_when_waived() -> None:
 def test_extra_fields_are_forbidden() -> None:
     with pytest.raises(ValidationError):
         ClaimEnvelope(claim_text="some statement", bogus_field="nope")  # type: ignore[call-arg]
+
+
+def test_groundedness_harness_rejects_unsupported_factual() -> None:
+    from jarvis.brain.deliberation import ClaimClass
+    # Factual claim with missing evidence → REJECTED
+    claim = _claim(evidence_ids=["missing"], support=ClaimSupport.MISSING)
+    claim.claim_class = ClaimClass.FACTUAL
+    envelope = envelope_from_claim(claim, evidence=[])
+    assert envelope.trust is TrustPosture.REJECTED
+    assert not envelope.may_commit()
+    # CAUSAL claim with missing evidence → REJECTED
+    claim2 = ClaimRecord(
+        claim_id="c2",
+        text="A causes B",
+        tag=ClaimTag.HYPOTHESIZED,
+        evidence_ids=[],
+        claim_class=ClaimClass.CAUSAL,
+        support=ClaimSupport.MISSING,
+    )
+    envelope2 = envelope_from_claim(claim2, evidence=[])
+    assert envelope2.trust is TrustPosture.REJECTED
+    # Supported factual → PROVEN / committable
+    claim3 = _claim(evidence_ids=["e1"], support=ClaimSupport.PRESENT)
+    claim3.claim_class = ClaimClass.FACTUAL
+    envelope3 = envelope_from_claim(claim3, evidence=[_evidence("e1")])
+    assert envelope3.trust is TrustPosture.PROVEN
+    assert envelope3.grounded()
+    assert envelope3.may_commit()
+    # Interpretive claim without support stays ASSERTED, not REJECTED
+    from jarvis.brain.deliberation import ClaimClass as CC
+    claim4 = ClaimRecord(
+        claim_id="c4",
+        text="Interpretation",
+        tag=ClaimTag.HYPOTHESIZED,
+        evidence_ids=[],
+        claim_class=CC.INTERPRETIVE,
+        support=ClaimSupport.MISSING,
+    )
+    envelope4 = envelope_from_claim(claim4, evidence=[])
+    assert envelope4.trust is TrustPosture.ASSERTED
+
