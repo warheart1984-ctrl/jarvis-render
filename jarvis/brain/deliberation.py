@@ -262,6 +262,15 @@ def _looks_like_world_fact(text: str) -> bool:
     # capital / country / city fact patterns
     if 'capital of' in lower or 'is the capital' in lower:
         return True
+    # population question patterns
+    if re.search(r'\bhow many people\b', lower):
+        return True
+    if re.search(r'\bhow many residents\b', lower):
+        return True
+    if re.search(r'\bhow large is the population\b', lower):
+        return True
+    if 'population of' in lower or 'people in' in lower or 'inhabitants of' in lower:
+        return True
     # numeric date as fact assertion
     if re.search(r'\b\d{4}\b', lower) and any(k in lower for k in ('founded', 'established', 'built', 'created', 'year')):
         return True
@@ -675,6 +684,18 @@ def _evidence_justifies(claim: ClaimRecord, item: EvidenceRef) -> bool:
     if item.kind is EvidenceKind.HYPOTHESIZED_NONE:
         return False
     if not _current_utterance_item(item):
+        # Require topical overlap for FACTUAL / CAUSAL to avoid false-friend hits.
+        if claim.claim_class in {ClaimClass.FACTUAL, ClaimClass.CAUSAL}:
+            # simple token overlap heuristic
+            claim_tokens = set(re.findall(r"\w+", claim.text.lower()))
+            item_tokens = set(re.findall(r"\w+", item.summary.lower()))
+            # require at least one meaningful token overlap
+            overlap = claim_tokens & item_tokens
+            # filter stop words
+            stop = {"the","a","an","is","of","in","on","for","to","and","or","has","have","with","by"}
+            overlap = {t for t in overlap if t not in stop and len(t) > 2}
+            if not overlap:
+                return False
         # Token overlap may cite a candidate; it does not verify a safety-critical assertion.
         return claim.claim_class is not ClaimClass.SAFETY_CRITICAL
     if claim.claim_id in {"claim-observed-utterance", "claim-specified-request"}:
@@ -968,6 +989,14 @@ def apply_reply_resolution(reply: str, resolution: ChallengeAction, claims: list
             | ChallengeAction.CLARIFY
             | ChallengeAction.FAIL_CLOSED
         ):
+            # Harden membrane: sanitize unsupported FACTUAL even under CONTINUE/DOWNGRADE
+            if any(
+                c.claim_id.startswith("claim-reply")
+                and c.claim_class is ClaimClass.FACTUAL
+                and c.support in {ClaimSupport.MISSING, ClaimSupport.WEAK}
+                for c in claims
+            ):
+                return _sanitize_unverified_factual_reply(reply, claims)
             return reply
         case ChallengeAction.ABSTAIN:
             return challenge_reply(ChallengeAction.ABSTAIN) or reply
