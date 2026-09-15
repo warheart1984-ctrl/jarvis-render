@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 
 from jarvis.brain.engine import JarvisEngine
 from jarvis.core.config import settings
-from jarvis.models.jarvis_types import JarvisMemoryEntry, JarvisState
+from jarvis.models.jarvis_types import JarvisMemoryEntry
 from jarvis.persistence import JarvisStore
 
 

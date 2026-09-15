@@ -20,6 +20,17 @@ from jarvis.brain.tools.envelope import (
     stub_tool_call,
     validate_tool_arguments,
 )
+from jarvis.brain.tools.ledger_recall import (
+    FakeLedgerRecallBackend,
+    LedgerRecallOutcome,
+    LedgerRecallUnavailable,
+    evidence_from_recall_item,
+    maybe_ledger_recall,
+    quoted_recall_payload,
+    recall_citation,
+    resolve_recall_query,
+    run_ledger_recall,
+)
 from jarvis.brain.tools.search import (
     FakeSearchBackend,
     evidence_from_search_hit,
@@ -30,7 +41,10 @@ from jarvis.brain.tools.search import (
 )
 
 __all__ = [
+    "FakeLedgerRecallBackend",
     "FakeSearchBackend",
+    "LedgerRecallOutcome",
+    "LedgerRecallUnavailable",
     "STUB_TOOLS",
     "SourceReceipt",
     "ToolCallRecord",
@@ -44,6 +58,7 @@ __all__ = [
     "fence_local_data",
     "fence_untrusted_data",
     "invoke_tool",
+    "maybe_ledger_recall",
     "maybe_calculator",
     "maybe_clock",
     "maybe_web_search",
@@ -53,6 +68,7 @@ __all__ = [
     "resolve_calculator_expression",
     "resolve_clock_request",
     "resolve_search_query",
+    "run_ledger_recall",
     "search_citation",
     "stub_tool_call",
     "validate_tool_arguments",

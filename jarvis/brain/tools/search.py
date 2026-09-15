@@ -31,6 +31,7 @@ from jarvis.brain.tools.envelope import (
     utc_now,
     validate_tool_arguments,
 )
+from jarvis.continuity import ContinuityLedgerClient
 from jarvis.core.config import settings
 from jarvis.governance.hashing import content_hash
 
@@ -352,6 +353,85 @@ def search_citation(receipt: SourceReceipt, *, session_id: str) -> dict[str, Any
         "trust_status": receipt.trust_status,
         "citation_id": receipt.source_id,
     }
+
+
+async def invoke_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    transaction_id: str,
+    correlation_id: str,
+) -> ToolCallRecord:
+    timeout = settings.search_timeout_seconds
+    attempts = settings.search_attempts
+    try:
+        tool = ToolName(name)
+        validated = validate_tool_arguments(name, arguments)
+    except ValueError as exc:
+        return ToolCallRecord(
+            tool_name=(name or "unknown")[:80] or "unknown",
+            arguments=dict(arguments or {}),
+            status=ToolCallStatus.INVALID,
+            transaction_id=transaction_id,
+            correlation_id=correlation_id,
+            timeout_seconds=timeout,
+            attempts=attempts,
+            attempt=0,
+            retryable=False,
+            error=str(exc),
+        )
+    match tool:
+        case ToolName.WEB_SEARCH:
+            return await run_web_search(
+                query=str(validated.get("query") or ""),
+                session_id="",
+                tenant_id="",
+                owner_sub="",
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                quota=lambda *_args: True,
+            )
+        case ToolName.LEDGER_RECALL:
+            from jarvis.brain.tools.ledger_recall import (
+                HttpLedgerRecallBackend,
+                UnavailableLedgerRecallBackend,
+                run_ledger_recall,
+            )
+
+            client = (
+                ContinuityLedgerClient(settings.continuity_ledger_url, settings.continuity_ledger_token, timeout=4.0)
+                if settings.continuity_ledger_url
+                else None
+            )
+            backend = HttpLedgerRecallBackend(client) if client is not None else UnavailableLedgerRecallBackend()
+            outcome = await run_ledger_recall(
+                query=str(validated.get("query") or ""),
+                session_id="",
+                tenant_id="",
+                owner_sub="",
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                quota=lambda *_args: True,
+                backend=backend,
+            )
+            return outcome.record
+        case (
+            ToolName.CALCULATOR
+            | ToolName.CLOCK
+            | ToolName.WEATHER
+            | ToolName.DOCUMENT_RETRIEVAL
+            | ToolName.HEALTH
+        ):
+            return stub_tool_call(
+                tool,
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                arguments=validated,
+                timeout_seconds=timeout,
+                attempts=attempts,
+            )
+        case _:
+            assert_never(tool)
 
 
 async def maybe_web_search(

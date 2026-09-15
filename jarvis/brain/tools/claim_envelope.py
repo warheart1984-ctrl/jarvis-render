@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from jarvis.brain.deliberation import ClaimRecord, ClaimSupport, ClaimTag, EvidenceKind, EvidenceRef
+from jarvis.brain.deliberation import ClaimClass, ClaimRecord, ClaimSupport, ClaimTag, EvidenceKind, EvidenceRef
 from jarvis.brain.tools.envelope import SourceReceipt
 
 _CLAIM_TEXT_LIMIT = 240
@@ -147,6 +147,8 @@ def envelope_from_claim(claim: ClaimRecord, evidence: list[EvidenceRef]) -> Clai
     Support is derived from evidence ids the claim actually cites. Referenced
     evidence is treated as data (TOOL_EXTERNAL / MEMORY / HISTORY), never
     authority. Defaults stay HYPOTHESIZED / asserted / inspiration.
+    Groundedness harness: FACTUAL/CAUSAL claims lacking support are REJECTED
+    durably on the envelope path, not silently softened.
     """
 
     by_id = {item.evidence_id: item for item in evidence}
@@ -156,7 +158,20 @@ def envelope_from_claim(claim: ClaimRecord, evidence: list[EvidenceRef]) -> Clai
         if ref is None:
             continue
         support.append(ClaimSupportRef.from_evidence_ref(ref))
-    trust = TrustPosture.PROVEN if claim.support is ClaimSupport.PRESENT else TrustPosture.ASSERTED
+    # Base trust from DOS-lite support flag
+    if claim.support is ClaimSupport.PRESENT and support:
+        trust = TrustPosture.PROVEN
+    elif claim.support is ClaimSupport.PRESENT and not support:
+        # support flag present but evidence missing at envelope build time
+        trust = TrustPosture.ASSERTED
+    else:
+        trust = TrustPosture.ASSERTED
+
+    # Groundedness harness: fail-closed for FACTUAL/CAUSAL without support
+    grounded = bool(support)
+    if claim.claim_class in (ClaimClass.FACTUAL, ClaimClass.CAUSAL) and not grounded:
+        trust = TrustPosture.REJECTED
+
     aris = ArisState.ADMITTED if trust is TrustPosture.PROVEN else ArisState.INSPIRATION
     return ClaimEnvelope(
         claim_text=claim.text,

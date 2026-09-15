@@ -15,7 +15,8 @@ from jarvis.auth import AccessStore
 from jarvis.brain.engine import JarvisEngine
 from jarvis.brain.llm import LLMResult
 from jarvis.core.config import settings
-from jarvis.identity import Principal as LedgerPrincipal, tenant_key
+from jarvis.identity import Principal as LedgerPrincipal
+from jarvis.identity import tenant_key
 from jarvis.models.jarvis_types import ChatRequest
 from jarvis.persistence import AuditLedger, JarvisStore, ReviverLedger
 from jarvis.persistence.recall import RecallLedger

@@ -32,6 +32,7 @@ _MATH_CHARS = re.compile(r"^[\d\s+\-*/().%eE]+$")
 
 class ToolName(str, Enum):
     WEB_SEARCH = "web_search"
+    LEDGER_RECALL = "ledger_recall"
     CALCULATOR = "calculator"
     CLOCK = "clock"
     WEATHER = "weather"
@@ -238,6 +239,31 @@ def validate_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) ->
             if not query or len(query) > _QUERY_LIMIT:
                 raise ValueError("web_search requires a query of 1..500 characters")
             return {"query": query[:_QUERY_LIMIT]}
+        case ToolName.LEDGER_RECALL:
+            query = str(args.get("query") or "").strip()
+            if not query or len(query) > _QUERY_LIMIT:
+                raise ValueError("ledger_recall requires a query of 1..500 characters")
+            validated: dict[str, Any] = {"query": query[:_QUERY_LIMIT]}
+            intent = str(args.get("intent") or "").strip()
+            if intent:
+                validated["intent"] = intent[:128]
+            max_memories = args.get("max_memories")
+            if max_memories is not None:
+                try:
+                    count = int(max_memories)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("ledger_recall max_memories must be an integer") from exc
+                if not 1 <= count <= 32:
+                    raise ValueError("ledger_recall max_memories must be 1..32")
+                validated["max_memories"] = count
+            return validated
+        case (
+            ToolName.CALCULATOR
+            | ToolName.CLOCK
+            | ToolName.WEATHER
+            | ToolName.DOCUMENT_RETRIEVAL
+            | ToolName.HEALTH
+        ):
         case ToolName.CALCULATOR:
             expression = str(args.get("expression") or "").strip()
             if not expression or len(expression) > MAX_EXPRESSION_CHARS:
@@ -266,6 +292,15 @@ def stub_tool_call(
     attempts: int = 1,
 ) -> ToolCallRecord:
     match name:
+        case ToolName.WEB_SEARCH | ToolName.LEDGER_RECALL:
+            raise ValueError(f"{name.value} is implemented; do not stub it")
+        case (
+            ToolName.CALCULATOR
+            | ToolName.CLOCK
+            | ToolName.WEATHER
+            | ToolName.DOCUMENT_RETRIEVAL
+            | ToolName.HEALTH
+        ):
         case ToolName.WEB_SEARCH | ToolName.CALCULATOR | ToolName.CLOCK:
             raise ValueError(f"{name.value} is implemented; do not stub it")
         case ToolName.WEATHER | ToolName.DOCUMENT_RETRIEVAL | ToolName.HEALTH:
