@@ -13,11 +13,22 @@ def extract_memory(
     state: JarvisState,
     user_message: str,
     reply: str,
+    *,
+    snippets: list[str] | None = None,
+    memory_admission: str = "eligible",
 ) -> JarvisMemoryEntry | None:
     """Decide whether this turn is worth remembering long-term and extract a memory entry.
 
-    Returns None if the turn is not significant enough to store.
+    Returns None if the turn is not significant enough to store. The assistant
+    reply is never admitted: hypothesized claims, tool/search snippets, and
+    inferred summaries cannot become remembered facts.
     """
+
+    if memory_admission != "eligible":
+        return None
+    retrieved = [snippet for snippet in (snippets or []) if snippet and snippet.strip()]
+    if retrieved:
+        return None
 
     lower = user_message.lower()
     category = "general"
@@ -44,9 +55,12 @@ def extract_memory(
     if state.confidence > 0.8:
         importance = min(1.0, importance + 0.1)
 
+    # User-grounded utterance only. Never store the reply or a polished summary.
     content = f"User said: {user_message[:200]}"
     if category == "preference":
         content = f"Preference: {user_message[:200]}"
+    if reply and reply.strip() and reply.strip() in content and reply.strip() not in user_message:
+        return None
 
     return JarvisMemoryEntry(
         memory_id=str(uuid4()),

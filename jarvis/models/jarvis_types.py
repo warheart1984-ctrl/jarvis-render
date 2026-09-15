@@ -110,6 +110,7 @@ class ChatResponse(BaseModel):
             },
         }
     )
+    cer: dict[str, Any] = Field(default_factory=lambda: {"status": "not_recorded"})
 
 
 class SpiralTurn(BaseModel):

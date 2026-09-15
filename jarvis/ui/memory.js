@@ -101,6 +101,28 @@ export function deliberationView(deliberation) {
   }
   return detail;
 }
+export function cerView(cer) {
+  const detail = element("details", undefined, "cer-record");
+  detail.append(element("summary", "CER · replayable turn record"));
+  detail.append(element("p", "CER is stored on the existing audit. Not a separate ledger.", "hint"));
+  if (!cer || cer.status === "not_recorded") {
+    detail.append(element("p", "Not recorded for this turn.", "hint"));
+    return detail;
+  }
+  const identity = cer.model_identity || {};
+  const replay = cer.replay || {};
+  const lineage = cer.lineage || {};
+  const verification = cer.verification || {};
+  detail.append(fields([
+    ["CER version", cer.version],
+    ["Provider / model", (identity.provider || "Not recorded") + " / " + (identity.model || "Not recorded")],
+    ["Challenge", verification.challenge],
+    ["Previous turn", lineage.previous_turn_id ?? "None"],
+    ["Input SHA-256", replay.input_sha256],
+    ["Content SHA-256", replay.content_sha256],
+  ]));
+  return detail;
+}
 export function renderInspection(root, data) {
   root.replaceChildren();
   if (!data || data.status !== "available") {
@@ -138,6 +160,7 @@ export function renderInspection(root, data) {
   for (const turn of [...data.turns].reverse()) {
     turns.append(receiptView(turn.context_receipt, turn.turn_id));
     if (turn.deliberation) turns.append(deliberationView(turn.deliberation));
+    if (turn.cer) turns.append(cerView(turn.cer));
   }
   grid.append(memories, turns); root.append(grid);
 }

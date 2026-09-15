@@ -12,7 +12,7 @@ from contextlib import contextmanager
 LEGACY_TENANT = "t_jon"
 LEGACY_SUBJECT = "operator-legacy"
 TABLES = frozenset({"sessions", "spiral_turns", "memories", "audit_events", "reviver_checkpoints",
-                    "recall_checkpoints", "recall_revoked"})
+                    "recall_checkpoints", "recall_revoked", "governance_outcomes", "evolution_reports"})
 
 
 def migrate_scope(db: sqlite3.Connection, table: str) -> None:

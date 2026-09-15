@@ -10,6 +10,7 @@ from typing import Any, assert_never
 from uuid import uuid4
 
 from jarvis.auth import AccessStore, Principal
+from jarvis.brain.cer import build_cer_record
 from jarvis.brain.context import build_chat_context
 from jarvis.brain.deliberation import (
     ChallengeAction,
@@ -442,18 +443,35 @@ class JarvisEngine:
                 if isinstance(iso, str) and len(iso) >= 8:
                     snippets.append(iso)
             public_tool_calls = [record.to_public_dict() for record in tool_records]
+            snippets = [hit.excerpt for hit in search_record.sources] if search_record else []
+            admit_user_grounded = (
+                request.memory_consent
+                and decision == "answer"
+                and runner.memory_admission == "eligible"
+                and not snippets
+            )
             memory_entry = (
-                extract_memory(state, request.message, reply)
-                if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible"
+                extract_memory(
+                    state,
+                    request.message,
+                    reply,
+                    snippets=snippets,
+                    memory_admission=runner.memory_admission,
+                )
+                if admit_user_grounded
                 else None
             )
             if memory_entry and snippets and not may_admit_retrieved_to_memory(user_requested=request.memory_consent):
                 if any(snippet and snippet in memory_entry.content for snippet in snippets):
                     memory_entry = None
+            if memory_entry and snippets and not may_admit_retrieved_to_memory(
+                user_requested=request.memory_consent
+            ):
+                memory_entry = None
             if memory_entry:
                 state.long_term_memory = add_long_term_memory(state, memory_entry)
 
-            if request.memory_consent and decision == "answer" and runner.memory_admission == "eligible":
+            if admit_user_grounded:
                 state.preferences = update_preferences(state, request.message)
             state.turn_count += 1
             turn = SpiralTurn(
@@ -483,13 +501,44 @@ class JarvisEngine:
             backend_status = "skipped_read_only"
             if decision == "answer" and request.memory_consent:
                 backend_status = "skipped_writes_disabled"
-                if settings.governed_writes_allowed():
+                if (
+                    settings.governed_writes_allowed()
+                    and runner.memory_admission == "eligible"
+                    and not snippets
+                ):
                     backend_status = await self._sync_with_spiral(state, request.message, reply)
             turn.latency_ms = llm_result.latency_ms if llm_result else 0.0
             turn.provider = llm_result.provider if llm_result else "local"
             turn.model = llm_result.model if llm_result else "bounded-local"
             turn.cost_usd = llm_result.cost_usd if llm_result else 0.0
             turn.backend_status = backend_status
+            prior_turn_ids = [
+                message.get("turn_id")
+                for message in state.conversation_history[:-2]
+                if message.get("role") == "assistant" and message.get("turn_id")
+            ]
+            cer = build_cer_record(
+                session_id=state.session_id,
+                turn_id=turn_id,
+                transaction_id=turn_id,
+                correlation_id=correlation_id,
+                user_message=request.message,
+                reply=reply,
+                provider=turn.provider,
+                model=turn.model,
+                inference_status=llm_result.inference_status if llm_result else "not_requested",
+                fallback_used=llm_result.fallback_used if llm_result else False,
+                safe_mode=llm_result.safe_mode if llm_result else False,
+                deliberation=public_deliberation,
+                claims=public_deliberation.get("claims") or [],
+                observe={
+                    "required": search_record is not None,
+                    "thin": False,
+                    "records": [search_record.to_public_dict()] if search_record else [],
+                },
+                context_receipt=receipt,
+                previous_turn_id=prior_turn_ids[-1] if prior_turn_ids else None,
+            )
             self.store.save_turn_bundle(
                 turn,
                 {
@@ -518,6 +567,8 @@ class JarvisEngine:
                         "memory_record": memory_reference(memory_entry) if memory_entry else None,
                         "deliberation": public_deliberation,
                         "tool_calls": public_tool_calls,
+                        "tool_calls": [search_record.to_public_dict()] if search_record else [],
+                        "cer": cer,
                     },
                 },
                 {
@@ -598,6 +649,7 @@ class JarvisEngine:
                 lock_reason=self.lock_reason(state.session_id),
                 tool_calls=public_tool_calls,
                 deliberation=public_deliberation,
+                cer=cer,
             )
 
     # ------------------------------------------------------------------
