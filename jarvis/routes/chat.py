@@ -137,13 +137,18 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
         "content_sha256"
     ) != ledger_memory.get("content_sha256"):
         raise HTTPException(status_code=502, detail="Ledger write verification hash or ID mismatch")
-    memory.metadata["continuity_ledger_id"] = ledger_memory["id"]
-    return {
-        "status": "durably_stored",
-        "memory_id": memory.memory_id,
-        "ledger_memory_id": (result.get("memory") or {}).get("id"),
-        "ledger": result,
-    }
+    try:
+        bound = active.reconcile_proposed_memory(
+            state,
+            memory_id=memory.memory_id,
+            ledger_memory_id=ledger_memory["id"],
+            content_sha256=ledger_memory["content_sha256"],
+            transaction_id=result.get("transaction_id"),
+            correlation_id=result.get("correlation_id"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {**bound, "ledger": result}
 
 
 @router.post("/memory/supersede")
@@ -174,15 +179,20 @@ async def supersede_memory(
         result = await engine.continuity.supersede(ledger_memory_id, request.content, request.session_id)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Continuity Ledger unavailable") from exc
-    if result.get("refused") is True or result.get("accepted") is False:
-        if result.get("refuse_reason") == "conflict-membrane":
+    if result.get("status") == "unavailable":
+        raise HTTPException(status_code=503, detail="Continuity Ledger unavailable; supersession not confirmed")
+    if result.get("status") in {"conflict", "refused"} or result.get("refused") is True:
+        if result.get("status") == "conflict" or result.get("refuse_reason") == "conflict-membrane":
             engine.set_read_only(request.session_id, "conflict")
         return {
-            "status": "conflict" if result.get("refuse_reason") == "conflict-membrane" else "refused",
+            "status": "conflict" if result.get("status") == "conflict"
+            or result.get("refuse_reason") == "conflict-membrane" else "refused",
             "read_only": engine.is_read_only(request.session_id),
             "lock_reason": (reason.value if (reason := engine.lock_reason(request.session_id)) else None),
             "ledger": result,
         }
+    if result.get("status") != "accepted" or result.get("accepted") is not True:
+        raise HTTPException(status_code=502, detail="Continuity Ledger returned an unconfirmed supersession")
     try:
         applied = engine.apply_supersession(
             state,

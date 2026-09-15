@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -27,6 +28,7 @@ class GovernedWriteResult(BaseModel):
     refuse_reason: str | None = None
     refuse_detail: str | None = None
     memory: dict[str, Any] | None = None
+    lineage: dict[str, Any] | None = None
     conflicts: list[dict[str, Any]] = []
     status: WriteStatus = WriteStatus.UNKNOWN
     transaction_id: str = ""
@@ -48,7 +50,7 @@ class ContinuityLedgerClient:
                 status=WriteStatus.SIMULATED,
                 transaction_id=transaction_id,
                 correlation_id=correlation_id,
-                detail="Dry-run: no external write performed",
+                refuse_detail="Dry-run: no external write performed",
             ).model_dump()
         payload = {
             "content": memory["content"],
@@ -63,63 +65,20 @@ class ContinuityLedgerClient:
             {"transaction_id": transaction_id, "correlation_id": correlation_id, "idempotency_key": idempotency_key}
         )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                data = None
-                for attempt in range(3):
-                    try:
-                        response = await client.post(
-                            f"{self.base_url}/api/jarvis/tools/emr_remember",
-                            json=payload,
-                            headers={
-                                **self.headers,
-                                "X-Request-ID": correlation_id,
-                                "Idempotency-Key": idempotency_key,
-                            },
-                        )
-                        # Retry only transient server/rate-limit failures. A
-                        # refusal or conflict is a durable business decision.
-                        if response.status_code not in {429, 500, 502, 503, 504}:
-                            response.raise_for_status()
-                            data = response.json()
-                            break
-                        if attempt == 2:
-                            response.raise_for_status()
-                    except (httpx.TimeoutException, httpx.NetworkError):
-                        if attempt == 2:
-                            raise
-                    await asyncio.sleep(0.05 * (2**attempt))
-                if data is None:
-                    raise RuntimeError("Continuity Ledger did not return a response")
+            data = await self._post_with_retries(
+                "/api/jarvis/tools/emr_remember",
+                payload,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
+            )
         except Exception as exc:
             return GovernedWriteResult(
                 status=WriteStatus.UNAVAILABLE,
                 transaction_id=transaction_id,
                 correlation_id=correlation_id,
-                detail=str(exc),
+                refuse_detail=str(exc),
             ).model_dump()
-        if data.get("refused"):
-            status = WriteStatus.CONFLICT if data.get("refuse_reason") == "conflict-membrane" else WriteStatus.REFUSED
-            return GovernedWriteResult(
-                status=status,
-                transaction_id=transaction_id,
-                correlation_id=correlation_id,
-                detail=data.get("refuse_detail"),
-                memory=data.get("memory"),
-                conflicts=data.get("conflicts", []),
-            ).model_dump()
-        if data.get("accepted") is not True or not (data.get("memory") or {}).get("id"):
-            return GovernedWriteResult(
-                status=WriteStatus.UNKNOWN,
-                transaction_id=transaction_id,
-                correlation_id=correlation_id,
-                detail="Ledger response did not prove acceptance",
-            ).model_dump()
-        return GovernedWriteResult(
-            status=WriteStatus.ACCEPTED,
-            transaction_id=transaction_id,
-            correlation_id=correlation_id,
-            memory=data.get("memory"),
-        ).model_dump()
+        return self._normalize_write_result(data, transaction_id=transaction_id, correlation_id=correlation_id)
 
     async def recall(self, session_id: str, query: str, intent: str = "transform") -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -139,28 +98,114 @@ class ContinuityLedgerClient:
 
     async def supersede(self, memory_id: str, content: str, session_id: str) -> dict[str, Any]:
         idempotency_key = f"jarvis-supersede-{memory_id}-{self._content_hash(content)}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/jarvis/tools/emr_upsert",
-                json={
-                    "id": memory_id,
-                    "content": content,
-                    "supersedes": memory_id,
-                    "source_agent": "jarvis",
-                    "session_id": session_id,
-                    "type": "architecture",
-                    "subject": "jarvis-prototype",
-                    "user_requested": True,
-                    "user_statement": "User explicitly superseded this memory.",
-                    "idempotency_key": idempotency_key,
-                },
-                headers={**self.headers, "Idempotency-Key": idempotency_key},
+        transaction_id, correlation_id = uuid4().hex, uuid4().hex
+        payload = {
+            "id": memory_id,
+            "content": content,
+            "supersedes": memory_id,
+            "source_agent": "jarvis",
+            "session_id": session_id,
+            "type": "architecture",
+            "subject": "jarvis-prototype",
+            "user_requested": True,
+            "user_statement": "User explicitly superseded this memory.",
+            "transaction_id": transaction_id,
+            "correlation_id": correlation_id,
+            "idempotency_key": idempotency_key,
+        }
+        try:
+            data = await self._post_with_retries(
+                "/api/jarvis/tools/emr_upsert",
+                payload,
+                idempotency_key=idempotency_key,
+                correlation_id=correlation_id,
             )
-            response.raise_for_status()
-            return response.json()
+        except Exception as exc:
+            return GovernedWriteResult(
+                status=WriteStatus.UNAVAILABLE,
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                refuse_detail=str(exc),
+            ).model_dump()
+        return self._normalize_write_result(data, transaction_id=transaction_id, correlation_id=correlation_id)
+
+    async def _post_with_retries(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            data = None
+            for attempt in range(3):
+                try:
+                    response = await client.post(
+                        f"{self.base_url}{path}",
+                        json=payload,
+                        headers={
+                            **self.headers,
+                            "X-Request-ID": correlation_id,
+                            "Idempotency-Key": idempotency_key,
+                        },
+                    )
+                    # Retry only transient server/rate-limit failures. A
+                    # refusal or conflict is a durable business decision.
+                    if response.status_code not in {429, 500, 502, 503, 504}:
+                        response.raise_for_status()
+                        data = response.json()
+                        break
+                    if attempt == 2:
+                        response.raise_for_status()
+                except (httpx.TimeoutException, httpx.NetworkError):
+                    if attempt == 2:
+                        raise
+                await asyncio.sleep(0.05 * (2**attempt))
+            if data is None:
+                raise RuntimeError("Continuity Ledger did not return a response")
+            return data
+
+    @staticmethod
+    def _normalize_write_result(
+        data: dict[str, Any],
+        *,
+        transaction_id: str,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        if data.get("refused"):
+            status = WriteStatus.CONFLICT if data.get("refuse_reason") == "conflict-membrane" else WriteStatus.REFUSED
+            return GovernedWriteResult(
+                accepted=False,
+                refused=True,
+                refuse_reason=data.get("refuse_reason"),
+                refuse_detail=data.get("refuse_detail"),
+                status=status,
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                memory=data.get("memory"),
+                lineage=data.get("lineage"),
+                conflicts=data.get("conflicts", []),
+            ).model_dump()
+        memory = data.get("memory") or data.get("replacement") or {}
+        if data.get("accepted") is not True or not memory.get("id"):
+            return GovernedWriteResult(
+                status=WriteStatus.UNKNOWN,
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                refuse_detail="Ledger response did not prove acceptance",
+                memory=data.get("memory"),
+                lineage=data.get("lineage"),
+            ).model_dump()
+        return GovernedWriteResult(
+            accepted=True,
+            status=WriteStatus.ACCEPTED,
+            transaction_id=transaction_id,
+            correlation_id=correlation_id,
+            memory=memory,
+            lineage=data.get("lineage") or memory.get("lineage"),
+        ).model_dump()
 
     @staticmethod
     def _content_hash(content: str) -> str:
-        import hashlib
-
         return hashlib.sha256(content.encode()).hexdigest()

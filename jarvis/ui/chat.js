@@ -193,6 +193,29 @@ async function governance() {
   $("recovery").textContent = banner ? banner.text : "";
   controls();
 }
+async function onSupersede(event) {
+  const detail = event.detail || {};
+  if (!session || !detail.memory_id || !detail.content) return;
+  const form = event.target;
+  const status = form?.querySelector?.("p.hint:last-of-type");
+  try {
+    const result = await post("/memory/supersede", {
+      session_id: session,
+      memory_id: detail.memory_id,
+      user_id: $("user-id").value.trim(),
+      content: detail.content,
+      user_requested: !!detail.user_requested,
+    });
+    if (status) status.textContent = result.status === "superseded"
+      ? "Supersession applied. Refreshing governance…"
+      : "Ledger response: " + (result.status || "unknown");
+    await governance();
+  } catch (e) {
+    if (status) status.textContent = e.message;
+    else error(e.message);
+  }
+}
+$("memory-inspection").addEventListener("jarvis:supersede", onSupersede);
 async function afterConnect() {
     $("write-policy").textContent = caps.governed_writes_enabled
       ? "Development governed writes enabled by operator. New local memories still start as drafts."

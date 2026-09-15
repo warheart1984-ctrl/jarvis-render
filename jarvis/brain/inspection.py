@@ -15,10 +15,15 @@ def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None =
         "session_id": state.session_id,
         "status": "available",
         "read_only": True,
+        "session_read_only": engine.is_read_only(state.session_id),
+        "lock_reason": (
+            reason.value if (reason := engine.lock_reason(state.session_id)) else None
+        ),
         "governed_writes_enabled": settings.governed_writes_allowed(),
         "new_memory_status": "draft",
         "records": [],
         "turns": [],
+        "conflicts": [],
         "withheld_records": 0,
         "previous_session": {"status": "not_used"},
         "evolution": {"status": "none", "auto_applied": False, "applied_changes": []},
@@ -41,6 +46,20 @@ def inspect_session(engine: Any, state: JarvisState, *, recall_key: str | None =
         result["status"] = "withheld"
         return result
     events = engine.audit.list(state.session_id)
+    for event in events:
+        if event["event_type"] != "conflict_membrane":
+            continue
+        payload = json.loads(event["payload_json"])
+        result["conflicts"].append(
+            {
+                "event_id": event.get("event_id"),
+                "memory_id": payload.get("memory_id"),
+                "reason": payload.get("reason"),
+                "conflicts": payload.get("conflicts") or [],
+                "mode": payload.get("mode"),
+                "timestamp": event.get("timestamp"),
+            }
+        )
     payloads = {e["turn_id"]: json.loads(e["payload_json"]) for e in events if e["event_type"] == "spiral_turn"}
     # Source all receipts from verified audit payloads, not mutable trace evidence_json.
     for turn in engine.store.load_session_turns(state.session_id, limit=20):

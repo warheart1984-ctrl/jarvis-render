@@ -95,3 +95,27 @@ test("inspection shows CER replay fields from the existing audit without a resea
   assert.ok(text.includes("aa"));
   assert.ok(text.includes("bb"));
 });
+test("inspection shows supersession lineage and conflict membrane without inventing write controls", () => {
+  const root = new Node("div");
+  renderInspection(root, {
+    status: "available",
+    withheld_records: 0,
+    governed_writes_enabled: false,
+    session_read_only: true,
+    lock_reason: "conflict",
+    turns: [],
+    conflicts: [{memory_id: "memory-1", reason: "conflict-membrane", mode: "read_only", conflicts: [{id: "c1"}]}],
+    records: [{
+      status: "superseded", preview: "old claim", memory_id: "memory-1", session_id: "s",
+      content_sha256: "f".repeat(64), integrity: "audit_bound", ledger_memory_id: "ledger-1",
+      reconciled: true, supersedes: null, superseded_by: "memory-2"
+    }]
+  });
+  const text = allText(root);
+  assert.match(text, /SUPERSEDED/);
+  assert.match(text, /Conflict membrane/);
+  assert.match(text, /conflict-membrane/);
+  assert.match(text, /Superseded by/);
+  assert.match(text, /memory-2/);
+  assert.doesNotMatch(text, /Supersede claim/);
+});

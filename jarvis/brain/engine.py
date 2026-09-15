@@ -421,15 +421,18 @@ class JarvisEngine:
             runtime_context["context_receipt"] = receipt
             try:
                 runner.evaluate(reply)
-                if runner.gated_reply:
-                    reply = runner.gated_reply
-                if runner.challenge_action is not None:
-                    decision = map_challenge_decision(runner.challenge_action, decision)
-                if runner.response_commit == "abstained" or runner.challenge_action is ChallengeAction.ABSTAIN:
-                    decision = "abstain"
-                elif runner.response_commit == "refused" and decision == "answer":
-                    decision = "fail_closed"
-                    reasons.append("safety-critical claim lacked verification")
+                if not (llm_result and llm_result.safe_mode):
+                    # Safe-mode replies are canned availability text, not an LLM answer
+                    # to gate; provider unavailability stays degraded, never fail_closed.
+                    if runner.gated_reply:
+                        reply = runner.gated_reply
+                    if runner.challenge_action is not None:
+                        decision = map_challenge_decision(runner.challenge_action, decision)
+                    if runner.response_commit == "abstained" or runner.challenge_action is ChallengeAction.ABSTAIN:
+                        decision = "abstain"
+                    elif runner.response_commit == "refused" and decision == "answer":
+                        decision = "fail_closed"
+                        reasons.append("safety-critical claim lacked verification")
                 deliberation = runner.commit()
             except DeliberationBlocked as exc:
                 reasons.append(str(exc))
@@ -767,6 +770,52 @@ class JarvisEngine:
 
         if self._read_only_reasons.get(session_id) is SessionLockReason.CONFLICT:
             self._read_only_reasons.pop(session_id, None)
+
+    def reconcile_proposed_memory(
+        self,
+        state: JarvisState,
+        *,
+        memory_id: str,
+        ledger_memory_id: str,
+        content_sha256: str,
+        transaction_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Bind a retrieve-verified Continuity Ledger ID onto local draft memory and audit it."""
+
+        memory = next((item for item in state.long_term_memory if item.memory_id == memory_id), None)
+        if memory is None:
+            raise ValueError("Memory not found")
+        if not ledger_memory_id or not content_sha256:
+            raise ValueError("Reconcile requires a ledger memory id and content hash")
+        if self.store.content_hash(memory.content) != content_sha256:
+            raise ValueError("Ledger content hash does not match the local memory")
+        existing = memory.metadata.get("continuity_ledger_id")
+        if existing and existing != ledger_memory_id:
+            raise ValueError("Memory is already reconciled to a different Continuity Ledger ID")
+
+        memory.metadata["continuity_ledger_id"] = ledger_memory_id
+        memory.metadata["reconciled"] = True
+        memory.metadata["reconcile_content_sha256"] = content_sha256
+        self.audit.append(
+            f"reconcile-{memory.memory_id}",
+            state.session_id,
+            "memory_reconciled",
+            {
+                "memory_id": memory.memory_id,
+                "ledger_memory_id": ledger_memory_id,
+                "content_sha256": content_sha256,
+                "transaction_id": transaction_id,
+                "correlation_id": correlation_id,
+            },
+        )
+        self._save_session(state)
+        return {
+            "status": "durably_stored",
+            "memory_id": memory.memory_id,
+            "ledger_memory_id": ledger_memory_id,
+            "durable": True,
+        }
 
     def apply_supersession(
         self,

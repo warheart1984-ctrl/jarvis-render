@@ -43,19 +43,32 @@ On restart, Jarvis restores only a checkpoint whose audit chain and audited turn
 anchor verify. Legacy checkpoints do not cryptographically bind their entire saved
 state; cross-session recall requires the additional signed attestation described
 in [the chat/recall contract](CHAT_VOICE.md#read-only-recall-across-sessions).
-Recovered production sessions remain read-only; start a new chat to continue.
+Recovered sessions reopen as read-only (`reason=recovery`) after Reviver verifies
+the audit chain and checkpoint; start a new chat to continue writing.
 Production supersession is blocked until EMR gates are implemented.
 
 ## API contracts
 
 `POST /chat` handles conversational turns and returns a public `deliberation`
-envelope (v0 / DOS-lite stages, claim tags, unsupported-claim warnings).
+envelope (v0 / DOS-lite stages, claim tags, unsupported-claim warnings) plus a
+CER block on the existing audit (not a fifth ledger).
 `GET /sessions/{id}/trace` exposes decision traces, including the same
 DOS-lite envelope, and `/sessions/{id}/audit/verify` verifies the audit chain.
+
+`POST /memory/propose` (governed writes only) proposes a draft to Continuity,
+retrieve-verifies the ledger row, then **reconciles** by binding
+`continuity_ledger_id`, persisting the session, and auditing `memory_reconciled`.
+Conflict-membrane refusals lock the session (`reason=conflict`).
+
+`POST /memory/supersede` is operator + service-token only. After a confirmed
+ledger upsert, Jarvis archives the old claim, writes replacement lineage, audits
+`memory_supersession`, and clears **conflict** locks only.
+
 Consented local memory extraction creates drafts. Governed external writes are
 disabled by default and always blocked in production pending EMR gates.
 See [memory provenance](MEMORY_PROVENANCE.md) for the authenticated inspection
-endpoint, citation contract, draft lifecycle, and write boundary.
+endpoint, citation contract, draft lifecycle, and write boundary. See
+[security review](SECURITY_REVIEW.md) for the latest seam pass.
 
 ## Deployment
 
@@ -65,9 +78,12 @@ readiness checks. Supply secrets through the deployment platform, not source.
 
 ## Project Infinity integration
 
-The local bounded engine is an offline fallback. Replacing it with Project
-Infinity requires the backend's authenticated endpoint and request/response
-schema; no undocumented wire contract is assumed here.
+When `JARVIS_INFINITY_API_BASE` is configured, evolve calls go to Project
+Infinity's authenticated EvolveEngine HTTP contract (`evolve` with job bounds).
+Infinity output is admitted as **evidence only** (`authority: false`): it may
+appear in audit/`external_suggestions` and does **not** rewrite the committed
+reply. Spiral V8 turn/chat/`write_memory` is not the evolve path. The local
+bounded engine remains the offline fallback when Infinity is unset or unavailable.
 
 ## Governance-outcome learning (report-only)
 

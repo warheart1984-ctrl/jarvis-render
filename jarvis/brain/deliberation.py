@@ -231,7 +231,7 @@ QUALIFY_NOTE = (
     "I do not have enough evidence to establish them as fact."
 )
 BLOCK_REPLY = (
-    "I'm refusing a committed answer on a safety-critical claim that lacks verification. "
+    "I'm refusing a committed answer on a claim that lacks verification. "
     "I can discuss the goal in read-only terms until there is cited evidence."
 )
 
@@ -324,6 +324,7 @@ class DeliberationResult(BaseModel):
     stages: list[StageRecord] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
     claims: list[ClaimRecord] = Field(default_factory=list)
+    envelopes: list[dict[str, Any]] = Field(default_factory=list)
     unsupported_claim_warnings: list[str] = Field(default_factory=list)
     challenge_action: ChallengeAction | None = None
     challenge_reasons: list[str] = Field(default_factory=list)
@@ -611,7 +612,7 @@ def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
         return ClaimClass.INTERPRETIVE
     if len(text) < 48:
         return ClaimClass.CONVERSATIONAL
-    return ClaimClass.FACTUAL
+    return ClaimClass.INTERPRETIVE
 
 
 def _evidence_justifies(claim: ClaimRecord, item: EvidenceRef) -> bool:
@@ -661,9 +662,13 @@ def action_for_class(claim_class: ClaimClass, support: ClaimSupport) -> Challeng
                 return ChallengeAction.CONTINUE
             if support is ClaimSupport.WEAK:
                 return ChallengeAction.DOWNGRADE
-            return ChallengeAction.QUALIFY
+            return ChallengeAction.BLOCK
         case ClaimClass.CAUSAL:
-            return ChallengeAction.CONTINUE if support is ClaimSupport.PRESENT else ChallengeAction.REVISE
+            if support is ClaimSupport.PRESENT:
+                return ChallengeAction.CONTINUE
+            if support is ClaimSupport.WEAK:
+                return ChallengeAction.REVISE
+            return ChallengeAction.BLOCK
         case ClaimClass.SAFETY_CRITICAL:
             return ChallengeAction.CONTINUE if support is ClaimSupport.PRESENT else ChallengeAction.BLOCK
         case _:
@@ -717,9 +722,13 @@ def resolve_claim_gate(
     reasons: list[str] = []
     resolution = prior or ChallengeAction.CONTINUE
     for claim in claims:
+        if not claim.claim_id.startswith("claim-reply"):
+            continue
         if claim.claim_class is ClaimClass.CONVERSATIONAL:
             continue
         if claim.claim_class is ClaimClass.INTERPRETIVE:
+            continue
+        if prior is ChallengeAction.ABSTAIN:
             continue
         resolution = _stronger_action(resolution, claim.action)
         if claim.action is not ChallengeAction.CONTINUE:
@@ -732,8 +741,15 @@ def resolve_claim_gate(
         reasons.append("require_evidence resolved to downgrade: no blocking substantive claim")
     memory: Literal["eligible", "held", "blocked"] = "eligible"
     response: Literal["committed", "qualified", "revised", "refused", "abstained"] = "committed"
-    if any(
-        claim.action is ChallengeAction.BLOCK and claim.claim_class is ClaimClass.SAFETY_CRITICAL for claim in claims
+    if prior is not ChallengeAction.ABSTAIN and any(
+        claim.claim_id.startswith("claim-reply")
+        and claim.action is ChallengeAction.BLOCK
+        and claim.claim_class in {
+            ClaimClass.SAFETY_CRITICAL,
+            ClaimClass.FACTUAL,
+            ClaimClass.CAUSAL,
+        }
+        for claim in claims
     ):
         memory = "blocked"
         response = "refused"
@@ -1088,6 +1104,7 @@ class DeliberationRunner:
         self.evidence: list[EvidenceRef] = []
         self.stages: list[StageRecord] = []
         self.claims: list[ClaimRecord] = []
+        self.envelopes: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.waivers: list[WaiverRecord] = []
         self.challenge_action: ChallengeAction | None = None
@@ -1271,6 +1288,11 @@ class DeliberationRunner:
         self.response_commit = response_commit
         self.memory_admission = memory_admission
         self.gated_reply = apply_reply_resolution(reply, resolution, self.claims)
+        from jarvis.brain.tools.claim_envelope import envelope_from_claim
+
+        self.envelopes = [
+            envelope_from_claim(claim, self.evidence).to_public_dict() for claim in self.claims
+        ]
         self._record(
             DeliberationStageName.EVALUATE,
             (
@@ -1349,6 +1371,7 @@ class DeliberationRunner:
             stages=list(self.stages),
             evidence=list(self.evidence),
             claims=list(self.claims),
+            envelopes=list(self.envelopes),
             unsupported_claim_warnings=list(self.warnings),
             challenge_action=self.challenge_action,
             challenge_reasons=list(self.challenge_reasons),

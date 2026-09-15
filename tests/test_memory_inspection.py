@@ -96,7 +96,13 @@ async def test_draft_record_and_exact_receipt_survive_restart_without_external_w
     restarted = JarvisEngine(store=engine.store)
     restored = await restarted.get_or_create_session("owner", state.session_id)
     assert restarted.is_read_only(state.session_id)
-    assert inspect_session(restarted, restored) == snapshot
+    after = inspect_session(restarted, restored)
+    assert after["session_read_only"] is True
+    assert after["lock_reason"] == "recovery"
+    for key in ("session_read_only", "lock_reason"):
+        snapshot.pop(key, None)
+        after.pop(key, None)
+    assert after == snapshot
     assert restored.conversation_history[-1]["turn_id"] == second.turn_id
 
 

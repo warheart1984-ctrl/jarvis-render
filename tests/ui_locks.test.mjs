@@ -24,6 +24,7 @@ test("recovery, conflict, and verification locks have distinct reason codes", ()
   assert.equal(lockBanner({ readOnly: true, lockReason: "conflict", verified: true }).reason, "conflict");
   assert.doesNotMatch(LOCK_REASONS.recovery, /conflict resolution/);
   assert.doesNotMatch(LOCK_REASONS.conflict, /verified recovery|verification failed/);
+  assert.match(LOCK_REASONS.conflict, /supersession|conflict panel/i);
   assert.equal(lockBanner({ readOnly: false, verified: true }), null);
 });
 
