@@ -263,13 +263,6 @@ def validate_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) ->
             if not query or len(query) > _QUERY_LIMIT:
                 raise ValueError("nx_search requires a query of 1..500 characters")
             return {"query": query[:_QUERY_LIMIT]}
-        case (
-            ToolName.CALCULATOR
-            | ToolName.CLOCK
-            | ToolName.WEATHER
-            | ToolName.DOCUMENT_RETRIEVAL
-            | ToolName.HEALTH
-        ):
         case ToolName.CALCULATOR:
             expression = str(args.get("expression") or "").strip()
             if not expression or len(expression) > MAX_EXPRESSION_CHARS:
@@ -298,16 +291,7 @@ def stub_tool_call(
     attempts: int = 1,
 ) -> ToolCallRecord:
     match name:
-        case ToolName.WEB_SEARCH | ToolName.LEDGER_RECALL | ToolName.NX_SEARCH:
-            raise ValueError(f"{name.value} is implemented; do not stub it")
-        case (
-            ToolName.CALCULATOR
-            | ToolName.CLOCK
-            | ToolName.WEATHER
-            | ToolName.DOCUMENT_RETRIEVAL
-            | ToolName.HEALTH
-        ):
-        case ToolName.WEB_SEARCH | ToolName.CALCULATOR | ToolName.CLOCK:
+        case ToolName.WEB_SEARCH | ToolName.LEDGER_RECALL | ToolName.NX_SEARCH | ToolName.CALCULATOR | ToolName.CLOCK:
             raise ValueError(f"{name.value} is implemented; do not stub it")
         case ToolName.WEATHER | ToolName.DOCUMENT_RETRIEVAL | ToolName.HEALTH:
             pass
