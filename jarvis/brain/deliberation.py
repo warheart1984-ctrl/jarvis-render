@@ -245,6 +245,28 @@ BLOCK_REPLY = (
     "I can discuss the goal in read-only terms until there is cited evidence."
 )
 
+import re
+
+def _looks_like_world_fact(text: str) -> bool:
+    """v0 heuristic for short quantitative/geo world assertions that must not be CONVERSATIONAL."""
+    lower = text.lower()
+    # numeric quantity + population/people/million/billion
+    if re.search(r'\b\d+(?:\.\d+)?\s*(?:million|billion|thousand)\b', lower):
+        if any(k in lower for k in ('people', 'population', 'has ', 'is ')):
+            return True
+    # has N ... people/population
+    if re.search(r'\bhas\s+\d+(?:\.\d+)?\s*(?:million|billion|thousand)?\s*people\b', lower):
+        return True
+    if re.search(r'\bhas\s+\d+(?:\.\d+)?\s*(?:million|billion|thousand)?\s*population\b', lower):
+        return True
+    # capital / country / city fact patterns
+    if 'capital of' in lower or 'is the capital' in lower:
+        return True
+    # numeric date as fact assertion
+    if re.search(r'\b\d{4}\b', lower) and any(k in lower for k in ('founded', 'established', 'built', 'created', 'year')):
+        return True
+    return False
+
 
 class EvidenceRef(BaseModel):
     """A public, secret-stripped citation. External items are never authority."""
@@ -633,10 +655,13 @@ def classify_claim_class(*, claim_id: str, text: str) -> ClaimClass:
         return ClaimClass.SAFETY_CRITICAL
     if any(hint in lower for hint in _CAUSAL_HINTS):
         return ClaimClass.CAUSAL
-    if any(hint in lower for hint in _CONVERSATIONAL_HINTS):
-        return ClaimClass.CONVERSATIONAL
+    # Factual world-assertion cues beat conversational length heuristic
+    if _looks_like_world_fact(text):
+        return ClaimClass.FACTUAL
     if any(hint in lower for hint in _FACTUAL_HINTS) or any(hint in lower for hint in _FACTUAL_ASSERTION_HINTS):
         return ClaimClass.FACTUAL
+    if any(hint in lower for hint in _CONVERSATIONAL_HINTS):
+        return ClaimClass.CONVERSATIONAL
     if any(word in lower for word in ("orienting", "intent", "emotion", "i think", "i'm mapping", "spiral")):
         return ClaimClass.INTERPRETIVE
     if len(text) < 48:
