@@ -415,6 +415,17 @@ async def invoke_tool(
                 backend=backend,
             )
             return outcome.record
+        case ToolName.NX_SEARCH:
+            from jarvis.brain.tools.nx_search import run_nx_search
+
+            # nx_search is synchronous; wrap in async return
+            record = run_nx_search(
+                query=str(validated.get("query") or ""),
+                transaction_id=transaction_id,
+                correlation_id=correlation_id,
+                timeout_seconds=settings.observe_tool_timeout_seconds,
+            )
+            return record
         case (
             ToolName.CALCULATOR
             | ToolName.CLOCK
