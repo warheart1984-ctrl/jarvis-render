@@ -26,12 +26,19 @@ def memory_reference(memory: JarvisMemoryEntry) -> dict[str, Any]:
         artifact = None
     ledger_id = memory.metadata.get("continuity_ledger_id")
     lifecycle = memory.metadata.get("status")
+
+    def _id(value: Any) -> str | None:
+        return value if isinstance(value, str) and 0 < len(value) <= 512 else None
+
     return {
         "memory_id": memory.memory_id,
         "session_id": memory.session_id,
         "content_sha256": content_hash(memory.content),
         "status": lifecycle if lifecycle in ("draft", "active", "archived", "superseded") else "legacy_unreviewed",
-        "ledger_memory_id": ledger_id if isinstance(ledger_id, str) and len(ledger_id) <= 512 else None,
+        "ledger_memory_id": _id(ledger_id),
+        "reconciled": bool(memory.metadata.get("reconciled")) if ledger_id else False,
+        "supersedes": _id(memory.metadata.get("supersedes")),
+        "superseded_by": _id(memory.metadata.get("superseded_by")),
         "amul_artifact": artifact,
         "artifact_verification": "not_checked" if artifact else "not_linked",
     }

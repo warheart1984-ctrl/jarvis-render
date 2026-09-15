@@ -54,13 +54,31 @@ configured, match the server-bound `JARVIS_RECALL_OWNER_USER_ID`. This remains a
 single-operator credential, **not multi-user identity isolation**. Responses are
 `Cache-Control: no-store` and do not call an inference or remote Ledger API.
 
-The response includes `records`, the latest 20 `turns`, `withheld_records`,
-`previous_session`, `new_memory_status: draft`, and the governed-write policy.
+The response includes `records`, the latest 20 `turns`, `conflicts` from
+`conflict_membrane` audit events, `lock_reason` / `session_read_only`,
+`withheld_records`, `previous_session`, `new_memory_status: draft`, and the
+governed-write policy. Record fields may include `ledger_memory_id`,
+`reconciled`, `supersedes`, and `superseded_by` when present in local metadata
+(string IDs only; arbitrary metadata is not exposed).
 `read_only: true` describes this endpoint, not whether ordinary chat is locked.
 Errors: 401 for missing/invalid credentials, 403 for a mismatched configured
 operator, 404 for an unloaded/unowned session, and 503 for an unavailable
 inspection dependency. A failed audit/turn hash returns `status: unverified`
 with empty records/turns; cleared sessions return `withheld`.
+
+## Propose reconcile and supersession
+
+`POST /memory/propose` only reports `durably_stored` after Continuity acceptance,
+retrieve verification of ID + content hash, and local reconcile (session persist +
+`memory_reconciled` audit). Idempotent propose retries reuse the same
+`Idempotency-Key`.
+
+`POST /memory/supersede` is operator break-glass. After a confirmed ledger upsert
+(with the same retry/idempotency pattern), Jarvis archives the old claim, writes
+replacement lineage, audits `memory_supersession`, and clears conflict locks
+only. The Memory provenance panel shows conflict events and, when governed
+writes are enabled in development, an operator supersession form for
+ledger-linked records. Production EMR gates still block these paths.
 
 Current-session records must match their stored owner, content and SHA-256.
 New records additionally match their creation audit's ID/hash/status/optional

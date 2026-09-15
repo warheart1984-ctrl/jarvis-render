@@ -1,6 +1,6 @@
 export const LOCK_REASONS = {
   recovery: "Recovered session: history is available, but new turns are locked (reason=recovery). Start a new chat to continue.",
-  conflict: "Session is locked pending conflict resolution (reason=conflict). Start a new chat to continue.",
+  conflict: "Session is locked pending conflict resolution (reason=conflict). Review the conflict panel below; operator supersession can unlock after a verified ledger write, or start a new chat.",
   verification: "Audit or turn verification failed (reason=verification). Start a new chat; this session remains blocked."
 };
 

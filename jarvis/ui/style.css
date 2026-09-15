@@ -31,7 +31,10 @@ summary{cursor:pointer;padding:9px 0;font-size:13px}pre{white-space:pre-wrap;ove
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}[hidden]{display:none!important}
 .memory-inspector{grid-column:1/-1;min-width:0}.write-policy{border-left:3px solid var(--accent);padding:10px 14px;background:#122c30;font-size:13px}
 .memory-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}.memory-grid>section{min-width:0}.memory-grid h3{font-size:14px;font-weight:600}
-.memory-record,.context-receipt,.deliberation-trace{border:1px solid var(--line);border-radius:9px;padding:4px 12px;margin:10px 0;overflow-wrap:anywhere}
+.memory-record,.context-receipt,.deliberation-trace,.cer-record{border:1px solid var(--line);border-radius:9px;padding:4px 12px;margin:10px 0;overflow-wrap:anywhere}
+.supersede-form{margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:9px;display:grid;gap:10px}
+.supersede-form textarea{width:100%;min-height:72px;resize:vertical}
+.conflict-panel{margin-bottom:16px}
 .claim-list{margin:8px 0}.claim-list p{margin:4px 0;font-size:12px}.message .deliberation-trace{background:#101b2b}
 .memory-record summary,.context-receipt summary,.deliberation-trace summary{white-space:normal}.memory-preview{white-space:pre-wrap;font-size:13px}.provenance-fields dd{font:11px/1.6 ui-monospace,monospace;overflow-wrap:anywhere;user-select:text}
 .citation-list{padding-left:20px}.citation-list>li{padding-left:4px}.context-receipt>.hint{margin-top:4px}.message .context-receipt{background:#101b2b}

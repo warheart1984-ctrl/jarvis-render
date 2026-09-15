@@ -142,7 +142,7 @@ export function renderInspection(root, data) {
   if (!data.records.length) memories.append(element("p", "No extracted memory records available in this view. Conversation recall can still appear in turn citations.", "hint"));
   for (const record of data.records) {
     const card = element("details", undefined, "memory-record");
-    card.append(element("summary", `${record.status === "draft" ? "DRAFT" : "LEGACY · unreviewed"} · ${record.preview.slice(0, 90)}`));
+    card.append(element("summary", `${statusLabel(record)} · ${record.preview.slice(0, 90)}`));
     card.append(element("p", record.preview, "memory-preview"));
     if (record.preview_truncated) card.append(element("p", "Preview truncated. Hash identifies the full stored text.", "hint"));
     card.append(fields([
@@ -150,10 +150,40 @@ export function renderInspection(root, data) {
       ["Source session", record.session_id], ["Created", record.created_at],
       ["Integrity", record.integrity === "audit_bound" ? "Hash and metadata match the audit record" : "Hash matches storage; no creation receipt recorded"],
       ["Ledger ID", record.ledger_memory_id ?? "Not linked"],
+      ["Reconciled", record.reconciled ? "yes" : "no"],
+      ["Supersedes", record.supersedes ?? "None"],
+      ["Superseded by", record.superseded_by ?? "None"],
       ["AMUL artifact", record.amul_artifact ? JSON.stringify(record.amul_artifact) : "Not linked"],
     ]));
     card.append(element("p", "Integrity is not truth or approval. Linked artifact contents are not checked by this view.", "hint"));
+    if (data.governed_writes_enabled && record.ledger_memory_id && record.status !== "superseded") {
+      card.append(supersedeForm(record));
+    }
     memories.append(card);
+  }
+  if (data.conflicts?.length) {
+    const conflicts = element("section", undefined, "conflict-panel");
+    conflicts.append(element("h3", "Conflict membrane"));
+    conflicts.append(element("p", data.lock_reason === "conflict" || data.session_read_only
+      ? "This session is read-only until an operator supersedes a conflicting claim or you start a new chat."
+      : "Conflict events were recorded for this session.", "hint"));
+    for (const item of data.conflicts) {
+      const block = element("details", undefined, "memory-record");
+      block.append(element("summary", `Conflict · ${item.memory_id || "unknown memory"}`));
+      block.append(fields([
+        ["Memory ID", item.memory_id],
+        ["Reason", item.reason ?? "conflict-membrane"],
+        ["Mode", item.mode ?? "read_only"],
+        ["Timestamp", item.timestamp],
+        ["Conflicting claims", item.conflicts?.length ? JSON.stringify(item.conflicts) : "None listed"],
+      ]));
+      const target = data.records.find(r => r.memory_id === item.memory_id);
+      if (data.governed_writes_enabled && target?.ledger_memory_id && target.status !== "superseded") {
+        block.append(supersedeForm(target));
+      }
+      conflicts.append(block);
+    }
+    grid.append(conflicts);
   }
   const turns = element("section");
   turns.append(element("h3", "Turn citations"), element("p", "Latest 20 turns. Receipts describe context supplied at that time, not current source availability. Older turns without receipts are marked not recorded.", "hint"));
@@ -163,4 +193,56 @@ export function renderInspection(root, data) {
     if (turn.cer) turns.append(cerView(turn.cer));
   }
   grid.append(memories, turns); root.append(grid);
+}
+function statusLabel(record) {
+  if (record.status === "superseded") return "SUPERSEDED";
+  if (record.status === "draft") return "DRAFT";
+  if (record.status === "active") return "ACTIVE";
+  if (record.status === "archived") return "ARCHIVED";
+  return "LEGACY · unreviewed";
+}
+function supersedeForm(record) {
+  const form = element("form", undefined, "supersede-form");
+  form.append(element("p", "Operator supersession replaces this ledger-linked claim. Requires service token and user_requested consent.", "hint"));
+  const label = element("label", "Replacement content");
+  const area = document.createElement("textarea");
+  area.name = "content";
+  area.rows = 3;
+  area.maxLength = 4000;
+  area.required = true;
+  area.placeholder = "Enter the corrected claim…";
+  label.append(area);
+  form.append(label);
+  const consent = element("label", undefined, "consent");
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.name = "user_requested";
+  check.required = true;
+  consent.append(check);
+  consent.append(element("span", " I explicitly request this supersession"));
+  form.append(consent);
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.className = "secondary";
+  button.textContent = "Supersede claim";
+  form.append(button);
+  const status = element("p", "", "hint");
+  form.append(status);
+  if (typeof form.addEventListener === "function") {
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const detail = {
+        memory_id: record.memory_id,
+        content: area.value.trim(),
+        user_requested: check.checked,
+      };
+      if (!detail.content || !detail.user_requested) {
+        status.textContent = "Replacement text and explicit consent are required.";
+        return;
+      }
+      status.textContent = "Submitting supersession…";
+      form.dispatchEvent(new CustomEvent("jarvis:supersede", { bubbles: true, detail }));
+    });
+  }
+  return form;
 }
