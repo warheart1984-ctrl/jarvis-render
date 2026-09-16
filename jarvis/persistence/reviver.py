@@ -54,6 +54,15 @@ class ReviverLedger(ScopedLedger):
             ).fetchone()
         return dict(row) if row else None
 
+    def list_verified_session_ids(self, limit: int = 100) -> list[str]:
+        with sqlite3.connect(self.path) as db:
+            rows = db.execute(
+                "SELECT DISTINCT session_id FROM reviver_checkpoints WHERE tenant_id=? AND owner_sub=? "
+                "AND verified=1 ORDER BY created_at DESC LIMIT ?",
+                (*self.scope, limit),
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def recover(self, session_id: str, audit: Any) -> dict[str, Any] | None:
         """Return the newest checkpoint only when its session audit is intact.
 

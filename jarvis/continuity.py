@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 class WriteStatus(StrEnum):
@@ -72,6 +75,7 @@ class ContinuityLedgerClient:
                 correlation_id=correlation_id,
             )
         except Exception as exc:
+            logger.warning("Continuity propose_memory failed: %s", exc)
             return GovernedWriteResult(
                 status=WriteStatus.UNAVAILABLE,
                 transaction_id=transaction_id,
@@ -134,6 +138,7 @@ class ContinuityLedgerClient:
                 correlation_id=correlation_id,
             )
         except Exception as exc:
+            logger.warning("Continuity supersede failed: %s", exc)
             return GovernedWriteResult(
                 status=WriteStatus.UNAVAILABLE,
                 transaction_id=transaction_id,

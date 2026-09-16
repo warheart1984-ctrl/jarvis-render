@@ -290,7 +290,8 @@ class JarvisEngine:
                         quota=self.access.consume_quota,
                         backend=self.search_backend,
                     )
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Web search fallback degraded: %s", exc)
                     # Degrade silently; do not fail-closed governance
                     search_record = None
             calc_record = await maybe_calculator(
@@ -530,9 +531,6 @@ class JarvisEngine:
                 if admit_user_grounded
                 else None
             )
-            if memory_entry and snippets and not may_admit_retrieved_to_memory(user_requested=request.memory_consent):
-                if any(snippet and snippet in memory_entry.content for snippet in snippets):
-                    memory_entry = None
             if memory_entry and snippets and not may_admit_retrieved_to_memory(
                 user_requested=request.memory_consent
             ):
@@ -709,7 +707,8 @@ class JarvisEngine:
                         recall_key,
                         expected_state=state.model_dump(mode="json"),
                     )
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Recall attest failed, locking session: %s", exc)
                     # The turn is stored, but no signed recall checkpoint was confirmed.
                     # Lock rather than continue with live state behind durable state.
                     self.set_read_only(state.session_id, SessionLockReason.VERIFICATION)
