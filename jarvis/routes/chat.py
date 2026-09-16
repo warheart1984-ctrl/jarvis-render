@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
+
+logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 
 from jarvis.auth import bind_user, guard_visitor_mutation, require_operator, require_session, visitor
@@ -194,6 +197,7 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
             idempotency_key=f"jarvis-memory-{memory.memory_id}",
         )
     except Exception as exc:
+        logger.exception("Continuity propose_memory failed")
         raise HTTPException(
             status_code=503,
             detail={"message": "Continuity Ledger unavailable or refused the proposal", "error": str(exc)},
@@ -228,6 +232,7 @@ async def propose_memory(request: MemoryProposal, http_request: Request) -> dict
     try:
         verified = await active.continuity.retrieve(ledger_memory["id"])
     except Exception as exc:
+        logger.exception("Continuity retrieve verification failed")
         raise HTTPException(status_code=503, detail="Ledger accepted write but retrieval verification failed") from exc
     verified_memory = verified.get("memory", verified)
     if verified_memory.get("id") != ledger_memory.get("id") or verified_memory.get(
@@ -275,6 +280,7 @@ async def supersede_memory(
     try:
         result = await engine.continuity.supersede(ledger_memory_id, request.content, request.session_id)
     except Exception as exc:
+        logger.exception("Continuity supersede failed")
         raise HTTPException(status_code=503, detail="Continuity Ledger unavailable") from exc
     if result.get("status") == "unavailable":
         raise HTTPException(status_code=503, detail="Continuity Ledger unavailable; supersession not confirmed")
@@ -332,6 +338,7 @@ async def chat(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
+        logger.exception("Chat endpoint failed")
         raise HTTPException(status_code=500, detail="Chat could not be completed. No response was confirmed.") from None
 
 
@@ -405,6 +412,7 @@ async def memory_inspection(
         try:
             return inspect_session(active, active.get_session(session_id), recall_key=recall_key)
         except Exception:
+            logger.exception("Memory inspection failed")
             raise HTTPException(status_code=503, detail="Memory inspection unavailable; no records confirmed") from None
 
 

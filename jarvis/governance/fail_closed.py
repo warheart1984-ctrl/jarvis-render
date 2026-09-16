@@ -18,7 +18,7 @@ from typing import assert_never
 from jarvis.governance.schemas import ContinuityAuthStatus, FailClosedReason, PolicyContext
 
 UNCERTAINTY_FAIL_CLOSED_THRESHOLD = 0.50
-STRESS_FAIL_CLOSED_THRESHOLD = 0.80
+STRESS_FAIL_CLOSED_THRESHOLD = 0.30
 
 
 def uncertainty_from_confidence(confidence: float) -> float:

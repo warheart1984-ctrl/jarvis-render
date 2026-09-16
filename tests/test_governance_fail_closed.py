@@ -36,9 +36,9 @@ def test_uncertainty_threshold_is_inclusive() -> None:
 
 
 def test_stress_threshold_is_exclusive() -> None:
-    assert STRESS_FAIL_CLOSED_THRESHOLD == 0.80
-    assert not is_stress_fail_closed(0.80)
-    assert is_stress_fail_closed(0.81)
+    assert STRESS_FAIL_CLOSED_THRESHOLD == 0.30
+    assert not is_stress_fail_closed(0.30)
+    assert is_stress_fail_closed(0.31)
 
 
 def test_low_confidence_maps_to_fail_closed_uncertainty() -> None:
