@@ -689,12 +689,15 @@ def _evidence_justifies(claim: ClaimRecord, item: EvidenceRef) -> bool:
             # simple token overlap heuristic
             claim_tokens = set(re.findall(r"\w+", claim.text.lower()))
             item_tokens = set(re.findall(r"\w+", item.summary.lower()))
-            # require at least one meaningful token overlap
+            # Require more than a generic shared word such as "capital" or
+            # "number". A single overlap can make an unrelated answer look
+            # supported by a search snippet; two meaningful tokens provide a
+            # small but useful v0 relevance floor.
             overlap = claim_tokens & item_tokens
             # filter stop words
             stop = {"the","a","an","is","of","in","on","for","to","and","or","has","have","with","by"}
             overlap = {t for t in overlap if t not in stop and len(t) > 2}
-            if not overlap:
+            if len(overlap) < 2:
                 return False
         # Token overlap may cite a candidate; it does not verify a safety-critical assertion.
         return claim.claim_class is not ClaimClass.SAFETY_CRITICAL

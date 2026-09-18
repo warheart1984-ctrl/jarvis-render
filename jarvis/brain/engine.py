@@ -13,6 +13,7 @@ from jarvis.auth import AccessStore, Principal
 from jarvis.brain.cer import build_cer_record
 from jarvis.brain.context import build_chat_context
 from jarvis.brain.deliberation import (
+    BLOCK_REPLY,
     ChallengeAction,
     DeliberationBlocked,
     DeliberationRunner,
@@ -276,24 +277,6 @@ class JarvisEngine:
                 quota=self.access.consume_quota,
                 backend=self.search_backend,
             )
-            # Pre-Commit observe for ordinary world FACTUAL messages
-            if search_record is None and _looks_like_world_fact(request.message):
-                try:
-                    query = request.message[:240]
-                    search_record = await run_web_search(
-                        query=query,
-                        session_id=state.session_id,
-                        tenant_id=self.store.tenant_id,
-                        owner_sub=self.store.owner_sub,
-                        transaction_id=turn_id,
-                        correlation_id=correlation_id,
-                        quota=self.access.consume_quota,
-                        backend=self.search_backend,
-                    )
-                except Exception as exc:
-                    logger.warning("Web search fallback degraded: %s", exc)
-                    # Degrade silently; do not fail-closed governance
-                    search_record = None
             calc_record = await maybe_calculator(
                 message=request.message,
                 transaction_id=turn_id,
@@ -483,6 +466,20 @@ class JarvisEngine:
             runtime_context["context_receipt"] = receipt
             try:
                 runner.evaluate(reply)
+                # The standalone deliberation API preserves its historical
+                # "qualified" result for an unsupported factual claim. The
+                # live Jarvis response lane is stricter: without evidence it
+                # must refuse rather than present a qualified assertion.
+                if any(
+                    claim.claim_id.startswith("claim-reply")
+                    and claim.claim_class.value == "factual"
+                    and claim.support.value == "missing"
+                    for claim in runner.claims
+                ):
+                    runner.challenge_action = ChallengeAction.BLOCK
+                    runner.response_commit = "refused"
+                    runner.memory_admission = "blocked"
+                    runner.gated_reply = BLOCK_REPLY
                 if not (llm_result and llm_result.safe_mode):
                     # Safe-mode replies are canned availability text, not an LLM answer
                     # to gate; provider unavailability stays degraded, never fail_closed.
@@ -514,6 +511,12 @@ class JarvisEngine:
                 if isinstance(iso, str) and len(iso) >= 8:
                     snippets.append(iso)
             public_tool_calls = [record.to_public_dict() for record in tool_records]
+            # Ledger recall is a first-class observe-only tool call too. Keep
+            # its record visible in the response/audit surface, including
+            # unavailable and degraded outcomes, so callers can distinguish
+            # "not configured" from "not attempted".
+            if recall_outcome is not None:
+                public_tool_calls.append(recall_outcome.record.to_public_dict())
             admit_user_grounded = (
                 request.memory_consent
                 and decision == "answer"
